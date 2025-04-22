@@ -16,6 +16,7 @@ class ChainState:
         prior (Optional[float]): Prior value. If not provided, it will be computed.
         likelihood (Optional[float]): Likelihood value. If not provided, it will be computed.
         model_output (Optional[np.ndarray]): Model output corresponding to the current position.
+        qoi (Optional[np.ndarray]): Quantity of interest derived from the model output.
         cost (Optional[float]): Cost associated with the current state.
         metadata (Optional[dict]): Additional metadata for the state.
     
@@ -42,17 +43,26 @@ class ChainState:
     metadata: Optional[dict] = field(default_factory=dict)
 
     def __post_init__(self):
-        """Validate state consistency and compute missing values"""
-        # Case 1: Direct posterior provided
-        if self.log_posterior is None:
-            if self.prior is None or self.likelihood is None:
-                raise ValueError("Must provide either log_posterior or both prior+likelihood")
+        """Auto-compute log_posterior if possible, but don't validate"""
+        if self.log_posterior is None and self.prior is not None and self.likelihood is not None:
             self.log_posterior = self.prior + self.likelihood
-        else:
-            if self.prior is not None or self.likelihood is not None:
-                raise ValueError("Specify either log_posterior OR prior+likelihood, not both")
 
     @property
     def posterior(self) -> float:
-        """Public interface to log-posterior value"""
-        return self.log_posterior
+        """Accessor with deferred validation"""
+        if self.log_posterior is not None:
+            return self.log_posterior
+        
+        if self.prior is not None and self.likelihood is not None:
+            return self.prior + self.likelihood
+            
+        raise ValueError(
+            "Posterior undefined. Set either: "
+            "1. log_posterior directly, or "
+            "2. both prior and likelihood"
+        )
+
+    def validate(self) -> None:
+        """Explicit validation check"""
+        if self.log_posterior is None and (self.prior is None or self.likelihood is None):
+            raise ValueError("Invalid state: Must provide either log_posterior or both prior+likelihood")

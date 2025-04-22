@@ -42,7 +42,26 @@ class MetropolisHastingsKernel(TransitionKernel):
         logq_forward, logq_reverse = proposal.proposal_logpdf(current, proposed)
         
         # Calculate the acceptance ratio
-        return (proposed.log_posterior + logq_reverse) - (current.log_posterior + logq_forward)
+        check = (proposed.log_posterior + logq_reverse) - (current.log_posterior + logq_forward)
+        if check > 0:
+            ar = 1.0
+        else:
+            ar = np.exp(check)
+
+        # Calculate the acceptance ratio
+        return ar
     
-    # STOPPED HERE!!
-    # I am confused if the updates should happen here because the kernel is also being adapted as it uses the proposal. Maybe check if proposal class has an update method and call it here if it does. Then the sampler class always calls the adapt method of the kernel and the kernel calls the adapt method of the proposal if it exists. But how do we pass the information required for the different udpates from the sampler to the kernel?
+    def adapt(self, proposal: Proposal, proposed: ChainState) -> None:
+        """
+        Adapt the proposal based on the proposed state.
+        """
+
+        # Check if the proposal has an adapt method
+        if hasattr(proposal, 'adapt'):
+            proposal.adapt(proposed)
+        else:
+            pass
+        
+        return None
+
+    

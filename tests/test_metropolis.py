@@ -1,0 +1,109 @@
+import pytest
+import numpy as np
+from kernels.metropolis import MetropolisHastingsKernel
+from proposals.gaussianproposal import GaussianRandomWalk
+from core.state import ChainState
+
+# --------------------------------------------------
+# Fixtures
+# --------------------------------------------------
+@pytest.fixture
+def model():
+    """Mock model returning log_posterior = -0.5 * sum(x^2)."""
+    class MockModel:
+        def __call__(self, params: np.ndarray) -> dict:
+            return {"log_posterior": -0.5 * np.sum(params**2)}
+    return MockModel()
+
+@pytest.fixture
+def proposal():
+    """Gaussian random walk proposal with fixed parameters."""
+    return GaussianRandomWalk(mu=np.zeros(2).reshape(2, 1), sigma=0.1 * np.eye(2))
+
+@pytest.fixture
+def kernel(model):
+    """Metropolis-Hastings kernel with mock model."""
+    return MetropolisHastingsKernel(model)
+
+@pytest.fixture
+def current_state():
+    """A sample ChainState for testing proposals."""
+    return ChainState(
+        position=np.array([[1.0], [-0.5]]),
+        log_posterior=-0.625,
+        metadata={
+            'iteration': 100,
+            'mean': np.array([[0.5], [0.5]]),
+            'covariance': np.eye(2),
+            'lambda': 1.0,
+            'acceptance_probability': 0.25
+        }
+    )
+
+# --------------------------------------------------
+# Tests
+# --------------------------------------------------
+def test_propose(kernel, proposal, current_state):
+    """Test that propose() generates valid states with model evaluations."""
+    proposed_state = kernel.propose(proposal, current_state)
+    
+    # Position should differ from current state
+    assert not np.allclose(proposed_state.position, current_state.position)
+    
+    # Model results should be populated
+    expected_logp = -0.5 * np.sum(proposed_state.position**2)
+    assert np.isclose(proposed_state.log_posterior, expected_logp)
+    
+    # Metadata should be copied, not referenced
+    assert proposed_state.metadata == current_state.metadata
+    assert proposed_state.metadata is not current_state.metadata
+
+# STOPPED HERE
+def test_acceptance_ratio_accepted(kernel, proposal, current_state):
+    """Test acceptance ratio when proposed state has higher log-posterior."""
+    # Propose a state with better log-posterior (closer to 0)
+    proposed_position = np.array([[0.1], [0.1]])
+    proposed_state = ChainState(
+        position=proposed_position,
+        log_posterior=-0.5 * np.sum(proposed_position**2)  # -0.01
+    )
+    
+    ar = kernel.acceptance_ratio(proposal, current_state, proposed_state)
+    assert ar == 1.0  # Proposed is better, so accept with probability 1
+
+# STOPPED HERE
+def test_acceptance_ratio_rejected(kernel, proposal, current_state):
+    """Test acceptance ratio when proposed state has lower log-posterior."""
+    # Propose a worse state (farther from 0)
+    proposed_position = np.array([2.0, -1.0])
+    proposed_state = ChainState(
+        position=proposed_position,
+        log_posterior=-0.5 * np.sum(proposed_position**2)  # -2.5
+    )
+    
+    # Theoretical acceptance ratio
+    expected_ar = np.exp(proposed_state.log_posterior - current_state.log_posterior)
+    
+    ar = kernel.acceptance_ratio(proposal, current_state, proposed_state)
+    assert np.isclose(ar, expected_ar, rtol=1e-3)
+
+def test_adapt_with_adaptive_proposal(kernel, current_state):
+    """Test adaptation with a proposal that supports it."""
+    class MockAdaptiveProposal:
+        def __init__(self):
+            self.adapted = False
+        def adapt(self, state):
+            self.adapted = True
+    
+    proposal = MockAdaptiveProposal()
+    kernel.adapt(proposal, current_state)
+    assert proposal.adapted
+
+def test_adapt_with_non_adaptive_proposal(kernel, current_state):
+    """Test adaptation with a proposal that lacks adapt()."""
+    class MockProposal:
+        pass
+    
+    proposal = MockProposal()
+    # No error should occur
+    kernel.adapt(proposal, current_state)

@@ -76,7 +76,7 @@ class HaarioAdaptiveProposal(GaussianProposal):
             xcov = xcov_minus
         else:
             # Update the covariance
-            xcov = (iteration - 1) / iteration * xcov_minus + self.scale / iteration * (iteration * xmean_minus @ xmean_minus.T - (iteration + 1)* xmean @ xmean.T + x @ x.T + self.eps * np.eye(self.dim))
+            xcov = (iteration - 1) / iteration * xcov_minus + self.scale / iteration * (iteration * xmean_minus @ xmean_minus.T - (iteration + 1) * xmean @ xmean.T + x @ x.T + self.eps * np.eye(self.dim))
 
         # Update the state metadata
         state.metadata['mean'] = xmean
@@ -110,11 +110,11 @@ class GlobalAdaptiveProposal(GaussianProposal):
 
         x = state.position
         iteration = state.metadata['iteration']
-        gamma = self.C / iteration ** self.alpha
+        gamma = (self.C) / (iteration ** self.alpha)
         xmean_minus = state.metadata['mean']
         xcov_minus = state.metadata['covariance']
         lambda__minus = state.metadata['lambda']
-        ar = state.metadata['acceptance_rate']
+        ar = state.metadata['acceptance_probability']
 
         # Update the mean
         xmean = xmean_minus + gamma * (x - xmean_minus)
