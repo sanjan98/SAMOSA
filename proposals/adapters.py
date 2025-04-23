@@ -34,12 +34,7 @@ class HaarioAdapter(AdapterBase):
             xcov = xcov_minus
         else:
             # Update the covariance
-            xcov = (iteration - 1) / iteration * xcov_minus + self.scale / iteration * (
-                iteration * xmean_minus @ xmean_minus.T - 
-                (iteration + 1) * xmean @ xmean.T + 
-                x @ x.T + 
-                self.eps * np.eye(dim)
-            )
+            xcov = (iteration - 1) / iteration * xcov_minus + self.scale / iteration * (iteration * xmean_minus @ xmean_minus.T - (iteration + 1) * xmean @ xmean.T + x @ x.T + self.eps * np.eye(dim))
 
         # Update the state metadata
         state.metadata['mean'] = xmean
@@ -84,10 +79,7 @@ class GlobalAdapter(AdapterBase):
             lambda_ = lambda__minus
         else:
             # Update the covariance
-            xcov = xcov_minus + gamma * (
-                (x - xmean_minus) @ (x - xmean_minus).T -               xcov_minus + 
-                self.eps * np.eye(dim)
-            )
+            xcov = xcov_minus + gamma * ((x - xmean_minus) @ (x - xmean_minus).T - xcov_minus + self.eps * np.eye(dim))
             lambda_ = lambda__minus * np.exp(gamma * (ar - self.ar))
         
         # Update the state metadata

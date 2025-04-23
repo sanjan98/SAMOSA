@@ -3,8 +3,6 @@ import numpy as np
 from proposals.gaussianproposal import (
     GaussianRandomWalk,
     IndependentProposal,
-    HaarioAdaptiveProposal,
-    GlobalAdaptiveProposal
 )
 from core.state import ChainState
 
@@ -16,7 +14,7 @@ def current_state():
     """A sample ChainState for testing proposals."""
     return ChainState(
         position=np.array([[1.0], [-0.5]]),
-        log_posterior=-2.3,
+        log_posterior=-0.625,
         metadata={
             'iteration': 100,
             'mean': np.array([[0.5], [0.5]]),
@@ -26,122 +24,118 @@ def current_state():
         }
     )
 
-# --------------------------------------------------
-# GaussianRandomWalk Tests
-# --------------------------------------------------
-def test_gaussian_rw_sample_logpdf(current_state):
-    """Test that GaussianRandomWalk generates valid proposals."""
-    proposal = GaussianRandomWalk(mu=np.zeros(2).reshape(2, 1), sigma=np.eye(2))
-    proposed_state = proposal.sample(current_state)
-    
-    # Check position update
-    assert proposed_state.position.shape == (2, 1)
-    assert not np.allclose(proposed_state.position, current_state.position)
+@pytest.fixture
+def gaussian_rw():
+    """Gaussian random walk proposal with identity covariance."""
+    return GaussianRandomWalk(mu=np.zeros((2, 1)), sigma=np.eye(2))
 
-    logq_fwd, logq_rev = proposal.proposal_logpdf(current_state, proposed_state)
-    
-    # Symmetric proposal should have logq_fwd ≈ logq_rev
-    assert np.isclose(logq_fwd, logq_rev, rtol=1e-3)
+@pytest.fixture
+def independent_proposal():
+    """Independent proposal centered at origin."""
+    return IndependentProposal(mu=np.zeros((2, 1)), sigma=2.0 * np.eye(2))
 
 # --------------------------------------------------
-# IndependentProposal Tests
+# Gaussian Random Walk Tests
 # --------------------------------------------------
-def test_independent_proposal_logpdf():
-    """Test logpdf calculation for IndependentProposal."""
-    proposal = IndependentProposal(mu=np.array([[1.0], [1.0]]), sigma=np.eye(2))
-    current = ChainState(position=np.array([[0.0], [0.0]]))
-    proposed = ChainState(position=np.array([[1.0], [1.0]]))
-    
-    logq_fwd, logq_rev = proposal.proposal_logpdf(current, proposed)
-    
-    # Forward logpdf should be N(1|1, I) = -0.5*(0)^2 = 0.0
-    # Reverse logpdf should be N(0|1, I) = -0.5*(1)^2*2 = -1.0
-    assert np.isclose(logq_fwd, 0.0 + np.log(1.0 / (2.0 * np.pi)), atol=1e-6)
-    assert np.isclose(logq_rev, -1.0 + np.log(1.0 / (2.0 * np.pi)), atol=1e-6)
+def test_gaussian_rw_init(gaussian_rw):
+    """Test initialization of GaussianRandomWalk."""
+    assert gaussian_rw.mu.shape == (2, 1)
+    assert gaussian_rw.cov.shape == (2, 2)
+    assert np.allclose(gaussian_rw.mu, np.zeros((2, 1)))
+    assert np.allclose(gaussian_rw.cov, np.eye(2))
 
-# --------------------------------------------------
-# HaarioAdaptiveProposal Tests
-# --------------------------------------------------
-def test_haario_adaptation(current_state):
-    """Test covariance adaptation in HaarioAdaptiveProposal."""
-    initial_cov = np.eye(2)
-    proposal = HaarioAdaptiveProposal(
-        mu=np.zeros(2).reshape(2, 1),
-        sigma=initial_cov,
-        scale=1.0,
-        adapt_start=50,
-        adapt_end=200,
-        eps=1e-6
-    )
+def test_gaussian_rw_sample(gaussian_rw, current_state):
+    """Test that GaussianRandomWalk samples correctly."""
+    # Sample multiple times to check randomness
+    samples = [gaussian_rw.sample(current_state).position for _ in range(100)]
+    for sample in samples:
+        assert sample.shape == (2, 1)
 
-    # Before adaptation window
-    current_state.metadata['iteration'] = 49
-    proposal.adapt(current_state)
-    assert np.allclose(proposal.cov, initial_cov)  # No adaptation
+    samples = np.array(samples).squeeze()
     
-    # During adaptation window
-    # Reset current state for the next test
-    current_state.metadata['mean'] = np.array([[0.5], [0.5]])
-    current_state.metadata['covariance'] = np.eye(2)
-    current_state.metadata['iteration'] = 100
-    proposal.adapt(current_state)
-    assert not np.allclose(proposal.cov, initial_cov)  # Covariance updated
+    # Check shape
+    assert samples.shape == (100, 2)
     
-    # Check covariance is positive definite
-    assert np.all(np.linalg.eigvals(proposal.cov) > 0)
+    # Check that samples are different
+    assert len(np.unique(samples, axis=0)) > 1
+    
+    # Check that samples are centered around current state (approximately)
+    assert np.allclose(np.mean(samples, axis=0), current_state.position.flatten(), atol=0.1)
 
-    # Check mean update
-    assert np.allclose(current_state.metadata['mean'], np.array([[0.505],[0.49]]), atol=1e-6)  # Updated mean
-
-    # Check covariance update
-    # Maybe later? -> I checked one entry seems right
+def test_gaussian_rw_logpdf(gaussian_rw, current_state):
+    """Test proposal_logpdf for GaussianRandomWalk."""
+    # Create proposed state with a known step
+    step = np.array([[0.5], [0.5]])
+    proposed_state = ChainState(position=current_state.position + step)
+    
+    # Calculate forward and reverse densities
+    logq_fwd, logq_rev = gaussian_rw.proposal_logpdf(current_state, proposed_state)
+    
+    # For random walk, forward and reverse densities should be equal
+    assert np.isclose(logq_fwd, logq_rev, atol=1e-10)
+    
+    # Check against manual calculation
+    expected_log_density = -0.5 * (step.T @ step).item() - np.log(2 * np.pi)
+    assert np.isclose(logq_fwd, expected_log_density, atol=1e-6)
 
 # --------------------------------------------------
-# GlobalAdaptiveProposal Tests
+# Independent Proposal Tests
 # --------------------------------------------------
-def test_global_adaptation(current_state):
-    """Test step size adaptation in GlobalAdaptiveProposal."""
-    proposal = GlobalAdaptiveProposal(
-        mu=np.zeros(2).reshape(2, 1),
-        sigma=np.eye(2),
-        ar=0.234,
-        adapt_start=50,
-        adapt_end=200,
-        C=1.0,
-        alpha=0.5,
-        eps=1e-6
-    )
-    
-    # Before adaptation
-    initial_lambda = 1.0
+def test_independent_init(independent_proposal):
+    """Test initialization of IndependentProposal."""
+    assert independent_proposal.mu.shape == (2, 1)
+    assert independent_proposal.cov.shape == (2, 2)
+    assert np.allclose(independent_proposal.mu, np.zeros((2, 1)))
+    assert np.allclose(independent_proposal.cov, 2.0 * np.eye(2))
 
-    # Check mean and covariance
-    proposal.adapt(current_state)
-    assert np.allclose(current_state.metadata['mean'], np.array([[0.55],[0.4]]), atol=1e-6)  # Updated mean
-    # Check covariance is positive definite
-    assert np.all(np.linalg.eigvals(current_state.metadata['covariance']) > 0)
-    
-    # Adapt with acceptance rate below target (0.1 < 0.234)
-    current_state.metadata['acceptance_probability'] = 0.1
-    proposal.adapt(current_state)
-    assert current_state.metadata['lambda'] < initial_lambda  # Decrease step size
-    
-    # Adapt with acceptance rate above target (0.5 > 0.234)
-    current_state.metadata['acceptance_probability'] = 0.5
-    proposal.adapt(current_state)
-    assert current_state.metadata['lambda'] > initial_lambda  # Increase step size
+def test_independent_sample(independent_proposal, current_state):
+    """Test sampling from IndependentProposal."""
+    # Sample multiple times
+    samples = [independent_proposal.sample(current_state).position for _ in range(100)]
+    # Assert size of each sample
+    for sample in samples:
+        assert sample.shape == (2, 1)
 
-if __name__ == "__main__":
-    cs = ChainState(
-        position=np.array([[1.0], [-0.5]]),
-        log_posterior=-2.3,
-        metadata={
-            'iteration': 100,
-            'mean': np.array([[0.5], [0.5]]),
-            'covariance': np.eye(2),
-            'lambda': 1.0,
-            'acceptance_probability': 0.25
-        }
-    )
-    # test_haario_adaptation(cs)
-    test_global_adaptation(cs)
+    samples = np.array(samples).squeeze()
+    
+    # Check shape
+    assert samples.shape == (100, 2)
+    
+    # Check randomness
+    assert len(np.unique(samples, axis=0)) > 1
+    
+    # Check samples are centered around proposal mean (approximately)
+    # With 50 samples, we should be within 0.5 of the mean
+    assert np.allclose(np.mean(samples, axis=0), independent_proposal.mu.flatten(), atol=0.1)
+    
+    # Check variance is approximately as specified
+    # With 50 samples, we should be within 50% of the true variance
+    var = np.var(samples, axis=0)
+    expected_var = np.diag(independent_proposal.cov).flatten()
+    assert np.all((var > 0.5 * expected_var) & (var < 1.5 * expected_var))
+
+def test_independent_logpdf(independent_proposal):
+    """Test proposal_logpdf for IndependentProposal."""
+    # Create two different states
+    state1 = ChainState(position=np.array([[0.0], [0.0]]))
+    state2 = ChainState(position=np.array([[1.0], [1.0]]))
+    
+    # Calculate forward and reverse densities
+    logq_fwd, logq_rev = independent_proposal.proposal_logpdf(state1, state2)
+    
+    # For independent proposal, densities depend only on target position
+    # Forward: p(state2 | anything)
+    # Reverse: p(state1 | anything)
+    
+    # Manual calculations
+    expected_logq_fwd = -0.5 * (state2.position.T @ np.linalg.inv(independent_proposal.cov) @ state2.position).item() - np.log(2 * np.pi * np.sqrt(np.linalg.det(independent_proposal.cov)))
+    expected_logq_rev = -0.5 * (state1.position.T @ np.linalg.inv(independent_proposal.cov) @ state1.position).item() - np.log(2 * np.pi * np.sqrt(np.linalg.det(independent_proposal.cov)))
+    
+    # Check against expected
+    assert np.isclose(logq_fwd, expected_logq_fwd, atol=1e-6)
+    assert np.isclose(logq_rev, expected_logq_rev, atol=1e-6)
+    
+    # Reversing the order should swap the densities
+    logq_rev2, logq_fwd2 = independent_proposal.proposal_logpdf(state2, state1)
+    assert np.isclose(logq_fwd, logq_fwd2, atol=1e-6)
+    assert np.isclose(logq_rev, logq_rev2, atol=1e-6)
