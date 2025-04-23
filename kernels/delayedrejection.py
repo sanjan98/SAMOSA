@@ -8,7 +8,7 @@ from core.state import ChainState
 from core.model import ModelProtocol
 from core.proposal import ProposalProtocol
 from core.kernel import KernelProtocol
-from typing import Any, Dict, Callable, List, Optional
+from typing import Optional
 
 class DelayedRejectionKernel(KernelProtocol):
     """
@@ -29,12 +29,126 @@ class DelayedRejectionKernel(KernelProtocol):
         self.cov_scale = cov_scale
         # Keep track of all intermediate states for multi-stage acceptance
         self.first_stage_state: Optional[ChainState] = None
+
+    def propose(self, proposal: ProposalProtocol, current: 'ChainState') -> 'ChainState':
         
-    def propose(self, proposal: ProposalProtocol, current_state: ChainState) -> ChainState:
+        proposed_state1 = self._proposestate(proposal, current)
+        # Store the first stage state
+        self.first_stage_state = proposed_state1
+        # Check if the first stage is accepted
+        ar1 = self.acceptance_ratio(proposal, current, proposed_state1)
+
+        u = np.random.rand()
+        if ar1 == 1.0 or u < ar1:
+            # Accept the first stage
+            self.ar = ar1 # Store the acceptance ratio
+            return proposed_state1
+        else:
+            # If the first stage is rejected, propose a second stage
+            # Temporarily scale the covariance
+            if hasattr(proposal, 'cov'):
+                original_cov = proposal.cov.copy()
+                proposal.cov = original_cov * self.cov_scale
+                proposed_state2 = self._proposestate(proposal, current)
+                proposal.cov = original_cov
+            else:
+                proposed_state2 = self._proposestate(proposal, current)
+
+            # Compute the acceptance ratio for the second stage
+            ar2 = self._second_stage_acceptance_ratio(proposal, current, proposed_state1, proposed_state2)
+
+            self.ar = ar2 # Store the acceptance ratio
+            
+            # Accept or reject the second stage
+            u2 = np.random.rand()
+            if ar2 == 1.0 or u2 < ar2:
+                # Accept the second stage
+                return proposed_state2
+            else:
+                # Reject both stages
+                return current
+    
+    def acceptance_ratio(self, proposal: ProposalProtocol, current: ChainState, proposed: ChainState) -> float:
         """
-        Generate a candidate state from the current state using the proposal.
-        This will either return the first stage proposal or the second stage proposal depending on the first stage acceptance ratio.
+        Compute the log acceptance probability for the proposed state.
         """
+        logq_forward, logq_reverse = proposal.proposal_logpdf(current, proposed)
+        
+        # Calculate the acceptance ratio
+        check = (proposed.log_posterior + logq_reverse) - (current.log_posterior + logq_forward)
+        if check > 0:
+            ar = 1.0
+        else:
+            ar = np.exp(check)
+
+        # Calculate the acceptance ratio
+        return ar
+
+    def _second_stage_acceptance_ratio(self, proposal: ProposalProtocol, current: ChainState, first_stage: ChainState, second_stage: ChainState) -> float:
+        """
+        Calculate the delayed rejection acceptance ratio for the second stage.
+        
+        Args:
+            proposal: The proposal distribution
+            current: The current chain state
+            first_stage: The first stage proposed state (rejected)
+            second_stage: The second stage proposed state
+            
+        Returns:
+            The acceptance ratio for the second stage
+        """
+        # Calculate standard proposal densities
+        logq_forward_1, logq_reverse_1 = proposal.proposal_logpdf(current, first_stage)
+        
+        # For the second stage, we need to scale the proposal temporarily
+        if hasattr(proposal, 'cov'):
+            original_cov = proposal.cov.copy()
+            proposal.cov = original_cov * self.cov_scale
+            
+            # Calculate second-order proposal densities
+            logq_forward_2, logq_reverse_2 = proposal.proposal_logpdf(current, second_stage)
+            
+            # Calculate hypothetical proposal densities from second_stage to first_stage
+            logq_y2_to_y1, logq_y1_to_y2 = proposal.proposal_logpdf(second_stage, first_stage)
+            
+            # Restore the original covariance
+            proposal.cov = original_cov
+        else:
+            # If proposal doesn't have adjustable covariance
+            logq_forward_2, logq_reverse_2 = proposal.proposal_logpdf(current, second_stage)
+            logq_y2_to_y1, logq_y1_to_y2 = proposal.proposal_logpdf(second_stage, first_stage)
+        
+        # Calculate first stage rejection probability
+        alpha_1 = min(1.0, np.exp((first_stage.log_posterior - current.log_posterior) + (logq_reverse_1 - logq_forward_1)))
+        
+        # Calculate hypothetical reverse first stage rejection probability
+        alpha_1_reverse = min(1.0, np.exp((first_stage.log_posterior - second_stage.log_posterior) + (logq_y1_to_y2 - logq_y2_to_y1)))
+        
+        # Calculate the numerator and denominator terms
+        numerator = (1 - alpha_1) * np.exp((second_stage.log_posterior - current.log_posterior) + (logq_reverse_2 - logq_forward_2))
+        denominator = 1 - alpha_1_reverse
+        
+        # Avoid division by zero
+        if denominator < 1e-10:
+            return 0.0
+            
+        # Compute the final acceptance ratio
+        ar = min(1.0, numerator / denominator)
+        return ar    
+    
+    def adapt(self, proposal: ProposalProtocol, proposed: ChainState) -> None:
+        """
+        Adapt the proposal based on the proposed state.
+        """
+
+        # Check if the proposal has an adapt method
+        if hasattr(proposal, 'adapt'):
+            proposal.adapt(proposed)
+
+        return None
+    
+    def _proposestate(self, proposal: ProposalProtocol, current_state: ChainState) -> ChainState:
+        
         # Sample a new state using the proposal
         proposed_position = proposal.sample(current_state).position
         
@@ -44,43 +158,4 @@ class DelayedRejectionKernel(KernelProtocol):
         # Create a new ChainState object for the proposed state
         proposed_state = ChainState(position=proposed_position, **model_result, metadata=current_state.metadata.copy())
         
-        # Store the first stage proposed state
-        self.stage_states[0] = proposed_state
-        
         return proposed_state
-    
-    def _generate_proposal(self, proposal: ProposalProtocol, current_state: ChainState) -> ChainState:
-        """Generate the first stage proposal"""
-        proposed_position = proposal.sample(current_state).position
-        model_result = self.model(proposed_position)
-
-        return ChainState(position=proposed_position, **model_result, metadata=current_state.metadata.copy())
-    
-    
-        """
-        Complete delayed rejection sampling logic - this would be used by the sampler
-        to enable the multi-stage proposal process.
-        """
-        # First stage proposal
-        proposed_state = self.propose(proposal, current_state)
-        ar = self.acceptance_ratio(proposal, current_state, proposed_state)
-        
-        # Accept/reject first stage
-        if np.random.rand() < ar:
-            return proposed_state
-            
-        # If rejected, try additional stages
-        for stage in range(1, self.max_stages):
-            # Generate another proposal
-            proposed_state = self.propose_stage(proposal, current_state, stage)
-            self.stage_states[stage] = proposed_state
-            
-            # Calculate delayed rejection acceptance ratio
-            ar = self.acceptance_ratio(proposal, current_state, proposed_state)
-            
-            # Accept/reject this stage
-            if np.random.rand() < ar:
-                return proposed_state
-                
-        # If all proposals rejected, stay at current state
-        return current_state

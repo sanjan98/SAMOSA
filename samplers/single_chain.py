@@ -2,10 +2,11 @@
 Class file for a single chain MCMC sampler.
 """
 
-from core.model import BaseModel
+from core.model import ModelProtocol
 from core.state import ChainState
-from core.kernel import TransitionKernel
-from core.proposal import Proposal
+from core.kernel import KernelProtocol
+from core.proposal import ProposalProtocol
+from kernels.delayedrejection import DelayedRejectionKernel
 from typing import Any, Dict
 import numpy as np
 
@@ -23,7 +24,7 @@ class MCMCsampler:
         n_iterations (int): Number of iterations to run the sampler.
     """
     
-    def __init__(self,  model: BaseModel, kernel: TransitionKernel, proposal: Proposal, initial_position: np.ndarray, n_iterations: int):
+    def __init__(self,  model: ModelProtocol, kernel: KernelProtocol, proposal: ProposalProtocol, initial_position: np.ndarray, n_iterations: int):
 
         dim = initial_position.shape[0]
         self.dim = dim
@@ -38,6 +39,7 @@ class MCMCsampler:
             'iteration': 1
             })
         self.n_iterations = n_iterations
+        self.is_delayed_rejection = isinstance(kernel, DelayedRejectionKernel)
 
     def run(self, output_dir: str) -> Dict[str, Any]:
 
@@ -50,25 +52,44 @@ class MCMCsampler:
         # Initialize the chain state
         current_state = self.initial_state
         samples = []
+        acceptance_count = 0
 
         # Run the MCMC sampling loop
         for i in range(1, self.n_iterations):
-            # Propose a new state
-            proposed_state = self.kernel.propose(self.proposal, current_state) # Metadata is copied from current_state
 
-            # Compute the acceptance ratio
-            ar = self.kernel.acceptance_ratio(self.proposal, current_state, proposed_state)
+            # Check for delayed rejection kernel
+            if self.is_delayed_rejection:
+                proposed_state = self.kernel.propose(self.proposal, current_state)
 
-            # Accept or reject the proposed state
-            if np.random.rand() < ar:
+                # Check if state was changed
+                if proposed_state is not current_state:
+                    acceptance_count += 1
+
+                ar = getattr(self.kernel, 'ar', 0.0)
+
+                # Update the next state
                 current_state = proposed_state
 
+            # Matropolis-Hastings kernel
+            else:
+
+                # Propose a new state
+                proposed_state = self.kernel.propose(self.proposal, current_state) # Metadata is copied from current_state
+
+                # Compute the acceptance ratio
+                ar = self.kernel.acceptance_ratio(self.proposal, current_state, proposed_state)
+
+                # Accept or reject the proposed state
+                if ar == 1 or np.random.rand() < ar:
+                    current_state = proposed_state
+                    acceptance_count += 1
+
             # Update the metadata for the proposed state
-            proposed_state.metadata['iteration'] = i
-            proposed_state.metadata['acceptance_probability'] = ar
+            current_state.metadata['iteration'] = i
+            current_state.metadata['acceptance_probability'] = ar
 
             # Adapt the proposal distribution
-            self.kernel.adapt(self.proposal, proposed_state)
+            self.kernel.adapt(self.proposal, current_state)
 
             # Store the current state
             samples.append(current_state)
