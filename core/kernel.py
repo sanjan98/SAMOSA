@@ -3,22 +3,20 @@ Template class file for the kernel
 """
 
 # Imports
-from abc import ABC, abstractmethod
+from typing import Protocol
 from core.state import ChainState
-from core.proposal import Proposal
+from core.proposal import ProposalProtocol
 
-class TransitionKernel(ABC):
+class KernelProtocol(Protocol):
     """
-    Base class for MCMC transition kernels.
+    Protocol for MCMC transition kernels.
     """
 
-    @abstractmethod
-    def propose(self, proposal: Proposal, state: 'ChainState') -> 'ChainState':
+    def propose(self, proposal: ProposalProtocol, state: 'ChainState') -> 'ChainState':
         """Generate candidate state from current state"""
         raise NotImplementedError("Implement propose method")
     
-    @abstractmethod
-    def acceptance_ratio(self, proposal: Proposal, current: 'ChainState', proposed: 'ChainState') -> float:
+    def acceptance_ratio(self, proposal: ProposalProtocol, current: 'ChainState', proposed: 'ChainState') -> float:
         """Compute log acceptance probability"""
         raise NotImplementedError("Implement acceptance_ratio method")
     

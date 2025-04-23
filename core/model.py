@@ -2,17 +2,15 @@
 Template class file for model
 """
 
-from abc import ABC, abstractmethod
-from typing import Dict, Any
+from typing import Dict, Any, Protocol
 import numpy as np
 
-class BaseModel(ABC):
+class ModelProtocol(Protocol):
     """
-    Abstract base class for MCMC models.
+    Protocol for MCMC models.
     Supports both direct posterior and prior/likelihood workflows.
     """
 
-    @abstractmethod
     def __call__(self, params: np.ndarray) -> Dict[str, Any]:
         """
         Compute probability components and model outputs.

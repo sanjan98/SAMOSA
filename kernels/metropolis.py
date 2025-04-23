@@ -5,22 +5,22 @@ Class file fpr the Metropolis-Hastings kernel
 # Imports
 import numpy as np
 from core.state import ChainState
-from core.kernel import TransitionKernel
-from core.proposal import Proposal
-from core.model import BaseModel
+from core.kernel import KernelProtocol
+from core.proposal import ProposalProtocol
+from core.model import ModelProtocol
 
-class MetropolisHastingsKernel(TransitionKernel):
+class MetropolisHastingsKernel(KernelProtocol):
     """
     Metropolis-Hastings kernel for MCMC sampling.
     """
 
-    def __init__(self, model: BaseModel):
+    def __init__(self, model: ModelProtocol):
         """
         Initialize the Metropolis-Hastings kernel with a model.
         """
         self.model = model
 
-    def propose(self, proposal: Proposal, current_state: ChainState) -> ChainState:
+    def propose(self, proposal: ProposalProtocol, current_state: ChainState) -> ChainState:
         """
         Generate a candidate state from the current state using the proposal.
         """
@@ -35,7 +35,7 @@ class MetropolisHastingsKernel(TransitionKernel):
         
         return proposed_state
     
-    def acceptance_ratio(self, proposal: Proposal, current: ChainState, proposed: ChainState) -> float:
+    def acceptance_ratio(self, proposal: ProposalProtocol, current: ChainState, proposed: ChainState) -> float:
         """
         Compute the log acceptance probability for the proposed state.
         """
@@ -51,7 +51,7 @@ class MetropolisHastingsKernel(TransitionKernel):
         # Calculate the acceptance ratio
         return ar
     
-    def adapt(self, proposal: Proposal, proposed: ChainState) -> None:
+    def adapt(self, proposal: ProposalProtocol, proposed: ChainState) -> None:
         """
         Adapt the proposal based on the proposed state.
         """
@@ -59,9 +59,7 @@ class MetropolisHastingsKernel(TransitionKernel):
         # Check if the proposal has an adapt method
         if hasattr(proposal, 'adapt'):
             proposal.adapt(proposed)
-        else:
-            pass
-        
+
         return None
 
     
