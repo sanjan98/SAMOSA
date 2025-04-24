@@ -7,7 +7,7 @@ from matplotlib.gridspec import GridSpec
 import os
 
 # Import the functions to be tested
-from utils.post_processing import (
+from samosa.utils.post_processing import (
     scatter_matrix,
     plot_trace,
     plot_lag,

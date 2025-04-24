@@ -4,9 +4,9 @@ Tests for proposal adaptation strategies
 
 import pytest
 import numpy as np
-from proposals.adapters import HaarioAdapter, GlobalAdapter
-from proposals.gaussianproposal import GaussianRandomWalk, IndependentProposal
-from core.state import ChainState
+from samosa.proposals.adapters import HaarioAdapter, GlobalAdapter
+from samosa.proposals.gaussianproposal import GaussianRandomWalk, IndependentProposal
+from samosa.core.state import ChainState
 
 # --------------------------------------------------
 # Fixtures
@@ -65,7 +65,7 @@ def test_haario_before_adaptation_window(haario_adapter, gaussian_rw, current_st
     current_state.metadata['iteration'] = haario_adapter.adapt_start - 1
     
     # Run adaptation
-    haario_adapter.adapt(current_state, gaussian_rw)
+    haario_adapter.adapt(gaussian_rw, current_state)
     
     # Mean should be set to zero
     assert np.allclose(gaussian_rw.mu, np.zeros((2, 1)))
@@ -81,7 +81,7 @@ def test_haario_after_adaptation_window(haario_adapter, gaussian_rw, current_sta
     current_state.metadata['iteration'] = haario_adapter.adapt_end + 1
     
     # Run adaptation
-    haario_adapter.adapt(current_state, gaussian_rw)
+    haario_adapter.adapt(gaussian_rw, current_state)
     
     # Mean should be set to zero
     assert np.allclose(gaussian_rw.mu, np.zeros((2, 1)))
@@ -97,7 +97,7 @@ def test_haario_during_adaptation_window(haario_adapter, gaussian_rw, current_st
     current_state.metadata['iteration'] = (haario_adapter.adapt_start + haario_adapter.adapt_end) // 2
     
     # Run adaptation
-    haario_adapter.adapt(current_state, gaussian_rw)
+    haario_adapter.adapt(gaussian_rw, current_state)
     
     # Covariance should be updated
     assert not np.allclose(gaussian_rw.cov, original_cov)
@@ -114,7 +114,7 @@ def test_haario_mean_update(haario_adapter, gaussian_rw, current_state):
     current_state.metadata['iteration'] = haario_adapter.adapt_start - 1
     
     # Run adaptation
-    haario_adapter.adapt(current_state, gaussian_rw)
+    haario_adapter.adapt(gaussian_rw, current_state)
     
     # Mean should be updated according to recursive formula
     expected_mean = initial_mean + (current_state.position - initial_mean) / current_state.metadata['iteration']
@@ -130,7 +130,7 @@ def test_haario_with_independent_proposal(haario_adapter, independent_proposal, 
     current_state.metadata['iteration'] = (haario_adapter.adapt_start + haario_adapter.adapt_end) // 2
     
     # Run adaptation
-    haario_adapter.adapt(current_state, independent_proposal)
+    haario_adapter.adapt(independent_proposal, current_state)
     
     # Mean should be updated
     assert not np.allclose(independent_proposal.mu, original_mu)
@@ -165,7 +165,7 @@ def test_global_before_adaptation_window(global_adapter, gaussian_rw, current_st
     current_state.metadata['iteration'] = global_adapter.adapt_start - 1
     
     # Run adaptation
-    global_adapter.adapt(current_state, gaussian_rw)
+    global_adapter.adapt(gaussian_rw, current_state)
     
     # Lambda should remain unchanged
     assert current_state.metadata['lambda'] == original_lambda
@@ -184,7 +184,7 @@ def test_global_after_adaptation_window(global_adapter, gaussian_rw, current_sta
     current_state.metadata['iteration'] = global_adapter.adapt_end + 1
     
     # Run adaptation
-    global_adapter.adapt(current_state, gaussian_rw)
+    global_adapter.adapt(gaussian_rw, current_state)
     
     # Lambda should remain unchanged
     assert current_state.metadata['lambda'] == original_lambda
@@ -201,7 +201,7 @@ def test_global_adaptation_low_acceptance(global_adapter, gaussian_rw, current_s
     current_state.metadata['acceptance_probability'] = 0.1  # below target 0.234
     
     # Run adaptation
-    global_adapter.adapt(current_state, gaussian_rw)
+    global_adapter.adapt(gaussian_rw, current_state)
     
     # Lambda should decrease to improve acceptance
     assert current_state.metadata['lambda'] < original_lambda
@@ -216,7 +216,7 @@ def test_global_adaptation_high_acceptance(global_adapter, gaussian_rw, current_
     current_state.metadata['acceptance_probability'] = 0.5  # above target 0.234
     
     # Run adaptation
-    global_adapter.adapt(current_state, gaussian_rw)
+    global_adapter.adapt(gaussian_rw, current_state)
     
     # Lambda should increase to lower acceptance
     assert current_state.metadata['lambda'] > original_lambda
@@ -234,7 +234,7 @@ def test_global_with_independent_proposal(global_adapter, independent_proposal, 
     current_state.metadata['acceptance_probability'] = 0.5  # above target 0.234
     
     # Run adaptation
-    global_adapter.adapt(current_state, independent_proposal)
+    global_adapter.adapt(independent_proposal, current_state)
     
     # Mean should be updated
     assert not np.allclose(independent_proposal.mu, original_mu)

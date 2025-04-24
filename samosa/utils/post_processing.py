@@ -10,8 +10,37 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import FuncFormatter
 from scipy.stats import gaussian_kde
 
+from samosa.core.state import ChainState
+
 from typing import List, Any, Optional, Dict, Tuple
 
+def get_position_from_states(samples: List[ChainState]) -> np.ndarray:
+    """
+    From a list of ChainState objects, extract the position of each state.
+
+    Parameters
+    ----------
+    samples : list of ChainState
+        List of ChainState objects.
+
+    Returns
+    -------
+    positions : np.ndarray
+        2D numpy array of shape (d, N), where d is the number of dimensions and N is the number of samples.
+    """
+
+    # Check if the samples are in the correct format
+    if not isinstance(samples, list) or len(samples) == 0:
+        raise ValueError("Samples should be a non-empty list of ChainState objects.")
+    if not all(isinstance(s, ChainState) for s in samples):
+        raise ValueError("All samples should be ChainState objects.")
+    
+    # Extract the position from each ChainState object
+    positions = [np.ravel(s.position) for s in samples]
+    
+    # Convert to numpy array and transpose to (d, N) format
+    return np.column_stack(positions)
+    
 def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None, maxs: Optional[np.ndarray] = None, upper_right: Optional[Any] = None, specials: Optional[Any] = None, hist_plot: Optional[bool] = True, nbins: Optional[int] = 100, img_kwargs: Optional[Dict[str, int]] = None, labels: Optional[List[str]] = None) -> Tuple[plt.Figure, List[plt.Axes], GridSpec]:
 
     """

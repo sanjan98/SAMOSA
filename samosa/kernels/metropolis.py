@@ -4,10 +4,10 @@ Class file fpr the Metropolis-Hastings kernel
 
 # Imports
 import numpy as np
-from core.state import ChainState
-from core.kernel import KernelProtocol
-from core.proposal import ProposalProtocol
-from core.model import ModelProtocol
+from samosa.core.state import ChainState
+from samosa.core.kernel import KernelProtocol
+from samosa.core.proposal import ProposalProtocol
+from samosa.core.model import ModelProtocol
 
 class MetropolisHastingsKernel(KernelProtocol):
     """

@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 # Import the functions to test
 # Note: You'll need to adjust this import path based on your actual module structure
-from utils.tools import (
+from samosa.utils.tools import (
     lognormpdf, 
     sample_multivariate_gaussian, 
     laplace_approx, 

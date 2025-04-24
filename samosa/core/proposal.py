@@ -4,7 +4,7 @@ Template class file for proposal
 
 # Imports
 from typing import Protocol, Optional, Tuple
-from core.state import ChainState
+from samosa.core.state import ChainState
 
 class ProposalProtocol(Protocol):
     """
@@ -32,7 +32,7 @@ class AdapterBase:
         self.adapt_end = adapt_end
         self.eps = eps
     
-    def adapt(self, state: ChainState, proposal: ProposalProtocol) -> None:
+    def adapt(self, proposal: ProposalProtocol, state: ChainState) -> None:
         """Adapt the proposal based on the current state"""
         raise NotImplementedError("Subclass must implement adapt method")
 
@@ -56,4 +56,4 @@ class AdaptiveProposal(ProposalProtocol):
     def adapt(self, state: ChainState) -> None:
         """Adapt the proposal if an adapter is provided"""
         if self.adapter is not None:
-            self.adapter.adapt(state, self.proposal)
+            self.adapter.adapt(self.proposal, state)

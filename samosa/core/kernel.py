@@ -4,8 +4,8 @@ Template class file for the kernel
 
 # Imports
 from typing import Protocol
-from core.state import ChainState
-from core.proposal import ProposalProtocol
+from samosa.core.state import ChainState
+from samosa.core.proposal import ProposalProtocol
 
 class KernelProtocol(Protocol):
     """
@@ -20,6 +20,6 @@ class KernelProtocol(Protocol):
         """Compute log acceptance probability"""
         raise NotImplementedError("Implement acceptance_ratio method")
     
-    def adapt(self, history: list['ChainState']):
+    def adapt(self, proposal: ProposalProtocol, proposed: 'ChainState') -> None:
         """Update kernel parameters using chain history"""
         pass

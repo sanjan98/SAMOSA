@@ -130,7 +130,7 @@ def laplace_approx(x0: np.ndarray, logpost: Callable, optmethod: str):
     cov_approx = res.hess_inv
     return map_point, cov_approx
 
-def log_banana(x: np.ndarray, mu: np.ndarray, sigma: np.ndarray) -> np.ndarray:
+def log_banana(x: np.ndarray, mu: Optional[np.ndarray] = None, sigma: Optional[np.ndarray] = None) -> np.ndarray:
     """
     Log pdf of the banana distribution.
 
@@ -151,6 +151,14 @@ def log_banana(x: np.ndarray, mu: np.ndarray, sigma: np.ndarray) -> np.ndarray:
 
     # Assert that x is 2D
     assert x.ndim == 2, "x must be a 2D array"
+
+    # Check if mu is None and set to zero if so
+    if mu is None:
+        mu = np.zeros((x.shape[0], 1))
+    
+    # Check if sigma is None and set to identity if so
+    if sigma is None:
+        sigma = np.eye(x.shape[0])
 
     # Flatten mean to handle both (d,) and (d, 1) inputs
     mu = mu.flatten()  # Now guaranteed to be (d,)

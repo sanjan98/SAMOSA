@@ -2,13 +2,15 @@
 Class file for a single chain MCMC sampler.
 """
 
-from core.model import ModelProtocol
-from core.state import ChainState
-from core.kernel import KernelProtocol
-from core.proposal import ProposalProtocol
-from kernels.delayedrejection import DelayedRejectionKernel
-from typing import Any, Dict
+from samosa.core.model import ModelProtocol
+from samosa.core.state import ChainState
+from samosa.core.kernel import KernelProtocol
+from samosa.core.proposal import ProposalProtocol
+from samosa.kernels.delayedrejection import DelayedRejectionKernel
+from typing import List
 import numpy as np
+import os
+import copy
 
 import pickle
 
@@ -41,21 +43,30 @@ class MCMCsampler:
         self.n_iterations = n_iterations
         self.is_delayed_rejection = isinstance(kernel, DelayedRejectionKernel)
 
-    def run(self, output_dir: str) -> Dict[str, Any]:
+    def run(self, output_dir: str) -> None:
 
         """
         Run the MCMC sampler for a specified number of iterations.
         
+        Parameters:
+        ----------
+            output_dir (str): Directory to save the chain states.
+
         Returns:
-            Dict[str, Any]: A dictionary containing the sampled states and other relevant information.
+        -------
+            None, but saves the chain states to a file.
         """
+
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        
         # Initialize the chain state
         current_state = self.initial_state
         samples = []
         acceptance_count = 0
 
         # Run the MCMC sampling loop
-        for i in range(1, self.n_iterations):
+        for i in range(1, self.n_iterations+1):
 
             # Check for delayed rejection kernel
             if self.is_delayed_rejection:
@@ -92,10 +103,24 @@ class MCMCsampler:
             self.kernel.adapt(self.proposal, current_state)
 
             # Store the current state
-            samples.append(current_state)
+            samples.append(copy.deepcopy(current_state))
 
         # Save the samples to a file
         with open(f"{output_dir}/samples.pkl", "wb") as f:
             pickle.dump(samples, f)
 
-        return None
+    def load_samples(self) -> List[ChainState]:
+        """
+        Load MCMC samples from a pickle file.
+
+        Parameters:
+        ----------
+            None
+
+        Returns:
+        -------
+            samples (list): List of ChainState objects representing the MCMC samples.
+        """
+        with open(f'{self.output_dir}/samples.pkl', "rb") as f:
+            self.samples = pickle.load(f)
+            return self.samples

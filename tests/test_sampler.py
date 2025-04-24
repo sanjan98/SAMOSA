@@ -3,13 +3,10 @@ import numpy as np
 import os
 import tempfile
 import pickle
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-from core.state import ChainState
-from core.model import ModelProtocol
-from core.kernel import KernelProtocol
-from core.proposal import ProposalProtocol
-from samplers.single_chain import MCMCsampler
+from samosa.core.state import ChainState
+from samosa.samplers.single_chain import MCMCsampler
 
 # --------------------------------------------------
 # Mock classes
@@ -117,18 +114,19 @@ def test_mcmc_sampler_run(model, kernel, proposal, initial_position, temp_dir):
         samples = pickle.load(f)
     
     # Check number of samples
-    assert len(samples) == n_iterations - 1
+    assert len(samples) == n_iterations
     
     # Check that samples are ChainState objects
     assert all(isinstance(s, ChainState) for s in samples)
     
     # Check that metadata was updated
-    assert samples[-1].metadata['iteration'] == n_iterations - 1
+    assert samples[7].metadata['iteration'] == 8
+    assert samples[-1].metadata['iteration'] == n_iterations
 
 def test_mcmc_sampler_metropolis(model, proposal, initial_position, temp_dir):
     """Test with Metropolis-Hastings kernel."""
     # Use the real kernel for this test
-    from kernels.metropolis import MetropolisHastingsKernel
+    from samosa.kernels.metropolis import MetropolisHastingsKernel
     kernel = MetropolisHastingsKernel(model)
     
     n_iterations = 10
@@ -143,7 +141,7 @@ def test_mcmc_sampler_metropolis(model, proposal, initial_position, temp_dir):
 def test_mcmc_sampler_delayed_rejection(model, proposal, initial_position, temp_dir):
     """Test with Delayed Rejection kernel."""
     # Use the real kernel for this test
-    from kernels.delayedrejection import DelayedRejectionKernel
+    from samosa.kernels.delayedrejection import DelayedRejectionKernel
     kernel = DelayedRejectionKernel(model)
     
     n_iterations = 10

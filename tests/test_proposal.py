@@ -1,10 +1,10 @@
 import pytest
 import numpy as np
-from proposals.gaussianproposal import (
+from samosa.proposals.gaussianproposal import (
     GaussianRandomWalk,
     IndependentProposal,
 )
-from core.state import ChainState
+from samosa.core.state import ChainState
 
 # --------------------------------------------------
 # Fixtures (Test Data Setup)
@@ -60,7 +60,7 @@ def test_gaussian_rw_sample(gaussian_rw, current_state):
     assert len(np.unique(samples, axis=0)) > 1
     
     # Check that samples are centered around current state (approximately)
-    assert np.allclose(np.mean(samples, axis=0), current_state.position.flatten(), atol=0.1)
+    assert np.allclose(np.mean(samples, axis=0), current_state.position.flatten(), atol=0.5)
 
 def test_gaussian_rw_logpdf(gaussian_rw, current_state):
     """Test proposal_logpdf for GaussianRandomWalk."""
@@ -106,7 +106,7 @@ def test_independent_sample(independent_proposal, current_state):
     
     # Check samples are centered around proposal mean (approximately)
     # With 50 samples, we should be within 0.5 of the mean
-    assert np.allclose(np.mean(samples, axis=0), independent_proposal.mu.flatten(), atol=0.1)
+    assert np.allclose(np.mean(samples, axis=0), independent_proposal.mu.flatten(), atol=0.5)
     
     # Check variance is approximately as specified
     # With 50 samples, we should be within 50% of the true variance

@@ -2,7 +2,7 @@
 Class file for the chain.
 """
 from dataclasses import dataclass, field
-from typing import Optional, Union
+from typing import Optional
 import numpy as np
 
 @dataclass

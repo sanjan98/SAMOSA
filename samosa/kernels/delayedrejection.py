@@ -4,10 +4,10 @@ Class file for the Delayed Rejection kernel
 
 # Imports
 import numpy as np
-from core.state import ChainState
-from core.model import ModelProtocol
-from core.proposal import ProposalProtocol
-from core.kernel import KernelProtocol
+from samosa.core.state import ChainState
+from samosa.core.model import ModelProtocol
+from samosa.core.proposal import ProposalProtocol
+from samosa.core.kernel import KernelProtocol
 from typing import Optional
 
 class DelayedRejectionKernel(KernelProtocol):

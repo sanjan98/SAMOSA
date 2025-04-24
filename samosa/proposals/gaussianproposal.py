@@ -4,9 +4,9 @@ Gaussian-based proposals for MCMC sampling
 
 import numpy as np
 from typing import Tuple
-from core.proposal import ProposalProtocol
-from core.state import ChainState
-import mcmc.utils.mcmc_utils_and_plot as utils
+from samosa.core.proposal import ProposalProtocol
+from samosa.core.state import ChainState
+from samosa.utils.tools import sample_multivariate_gaussian, lognormpdf
 
 class GaussianRandomWalk(ProposalProtocol):
     """Random walk proposal centered at current state"""
@@ -17,13 +17,13 @@ class GaussianRandomWalk(ProposalProtocol):
         self.cov = sigma.copy() 
     
     def sample(self, current_state: ChainState) -> ChainState:
-        step = utils.sample_multivariate_gaussian(self.mu, self.cov)
+        step = sample_multivariate_gaussian(self.mu, self.cov)
         return ChainState(position=current_state.position + step)
     
     def proposal_logpdf(self, current_state: ChainState, proposed_state: ChainState) -> Tuple[float, float]:
         """Calculate forward and reverse log probability"""
-        logq_forward = utils.lognormpdf(proposed_state.position, current_state.position + self.mu, self.cov)
-        logq_reverse = utils.lognormpdf(current_state.position, proposed_state.position + self.mu, self.cov)
+        logq_forward = lognormpdf(proposed_state.position, current_state.position + self.mu, self.cov)
+        logq_reverse = lognormpdf(current_state.position, proposed_state.position + self.mu, self.cov)
 
         return logq_forward, logq_reverse
     
@@ -41,13 +41,13 @@ class IndependentProposal(ProposalProtocol):
     
     def sample(self, _: ChainState) -> ChainState:
         return ChainState(
-            position=utils.sample_multivariate_gaussian(self.mu, self.cov)
+            position=sample_multivariate_gaussian(self.mu, self.cov)
         )
     
     def proposal_logpdf(self, current_state: ChainState, proposed_state: ChainState) -> tuple[float, float]:
         """Calculate forward and reverse log probability"""
-        logq_forward = utils.lognormpdf(proposed_state.position, self.mu, self.cov)
-        logq_reverse = utils.lognormpdf(current_state.position, self.mu, self.cov)
+        logq_forward = lognormpdf(proposed_state.position, self.mu, self.cov)
+        logq_reverse = lognormpdf(current_state.position, self.mu, self.cov)
         return logq_forward, logq_reverse
     
     def adapt(self, _: ChainState):

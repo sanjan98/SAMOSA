@@ -5,9 +5,9 @@ Class file for the proposal adapters
 # Imports
 import numpy as np
 from typing import Tuple
-from core.state import ChainState
-from core.proposal import ProposalProtocol, AdapterBase
-from proposals.gaussianproposal import GaussianRandomWalk, IndependentProposal
+from samosa.core.state import ChainState
+from samosa.core.proposal import ProposalProtocol, AdapterBase
+from samosa.proposals.gaussianproposal import GaussianRandomWalk, IndependentProposal
 
 # Concrete Adapters
 class HaarioAdapter(AdapterBase):
@@ -17,7 +17,7 @@ class HaarioAdapter(AdapterBase):
         super().__init__(adapt_start, adapt_end, eps)
         self.scale = scale
     
-    def adapt(self, state: ChainState, proposal: ProposalProtocol) -> None:
+    def adapt(self, proposal: ProposalProtocol, state: ChainState) -> None:
         """Adapt the proposal covariance based on the history of samples"""
 
         x = state.position
@@ -58,7 +58,7 @@ class GlobalAdapter(AdapterBase):
         self.C = C
         self.alpha = alpha
         
-    def adapt(self, state: ChainState, proposal: ProposalProtocol) -> None:
+    def adapt(self, proposal: ProposalProtocol, state: ChainState,) -> None:
         """Adapt the proposal covariance based on the target acceptance rate"""
 
         x = state.position

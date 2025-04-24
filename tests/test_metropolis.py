@@ -1,8 +1,8 @@
 import pytest
 import numpy as np
-from kernels.metropolis import MetropolisHastingsKernel
-from proposals.gaussianproposal import GaussianRandomWalk
-from core.state import ChainState
+from samosa.kernels.metropolis import MetropolisHastingsKernel
+from samosa.proposals.gaussianproposal import GaussianRandomWalk
+from samosa.core.state import ChainState
 
 # --------------------------------------------------
 # Fixtures
