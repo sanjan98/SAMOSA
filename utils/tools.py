@@ -4,9 +4,10 @@ Script housing some helper functions
 
 # Imports
 import numpy as np
+import scipy
+from typing import Callable, Optional
 
-# For comments on the first four functions see the Gaussian Random Variable Notebook
-def lognormpdf(x, mean, cov):
+def lognormpdf(x: np.ndarray, mean: np.ndarray, cov: np.ndarray) -> np.ndarray:
     """Compute log pdf of a multivariate Normal distribution.
     
     Inputs
@@ -28,6 +29,7 @@ def lognormpdf(x, mean, cov):
     
     if x.ndim == 1:
         x = x[:, np.newaxis]
+    
     d, N = x.shape
     
     # Precompute normalization term
@@ -43,121 +45,13 @@ def lognormpdf(x, mean, cov):
     
     # Log PDF calculation with squeeze for scalar output
     logpdf = np.log(preexp) - 0.5 * inexp
-    return logpdf.squeeze()
 
-def batch_normal_pdf(x, mu, cov, logpdf=True):
-    """
-    Compute the multivariate normal pdf at each x location.
-    Dimensions
-    ----------
-    d: dimension of the problem
-    *: any arbitrary shape (a1, a2, ...)
-    Parameters
-    ----------
-    x: (*, d) location to compute the multivariate normal pdf
-    mu: (*, d) mean values to use at each x location 
-    cov: (*, d, d) covariance matrix
-    Returns
-    -------
-    pdf: (*) the multivariate normal pdf at each x location
-    """
-    # Make some checks on input
-    x = np.atleast_1d(x)
-    mu = np.atleast_1d(mu)
-    cov = np.atleast_1d(cov)
-    dim = cov.shape[-1]
-
-    # 1-D case
-    if len(cov.shape) == 1:
-        cov = cov[:, np.newaxis]    # (1, 1)
-    if len(x.shape) == 1:
-        x = x[np.newaxis, :]
-    if len(mu.shape) == 1:
-        mu = mu[np.newaxis, :]
-
-    assert cov.shape[-1] == cov.shape[-2] == dim
-    assert x.shape[-1] == mu.shape[-1] == dim
-
-    # Normalizing constant (scalar)
-    preexp = 1 / ((2*np.pi)**(dim/2) * np.linalg.det(cov)**(1/2))
-
-    # Can broadcast x - mu with x: (1, Nr, Nx, d) and mu: (Ns, Nr, Nx, d)
-    diff = x - mu
-
-    # In exponential
-    diff_col = diff.reshape((*diff.shape, 1))  # (*, d, 1)
-    diff_row = diff.reshape((*diff.shape[:-1], 1, diff.shape[-1]))  # (*, 1, d)
-    inexp = np.squeeze(diff_row @ np.linalg.inv(cov) @ diff_col, axis=(-1, -2))  # (*, 1, d) x (*, d, 1) = (*, 1, 1)
-
-    # Compute pdf
-    pdf = np.log(preexp) + (-1/2)*inexp if logpdf else preexp * np.exp(-1 / 2 * inexp)
-
-    return pdf.astype(np.float32)
-
-
-def batch_normal_sample(mean, cov, size: "tuple | int" = ()):
-    """
-    Batch sample multivariate normal distributions.
-    https://stackoverflow.com/questions/69399035/is-there-a-way-of-batch-sampling-from-numpys-multivariate-normal-distribution-i
-    Arguments:
-        mean: expected values of shape (…M, D)
-        cov: covariance matrices of shape (…M, D, D)
-        size: additional batch shape (…B)
-    Returns: samples from the multivariate normal distributions
-             shape: (…B, …M, D)
-    """
-    # Make some checks on input
-    mean = np.atleast_1d(mean)
-    cov = np.atleast_1d(cov)
-    dim = cov.shape[0]
-
-    # 1-D case
-    if dim == 1:
-        cov = cov[:, np.newaxis]    # (1, 1)
-    if len(mean.shape) == 1:
-        mean = mean[np.newaxis, :]
-
-    assert cov.shape[0] == cov.shape[1] == dim
-    assert mean.shape[-1] == dim
-
-    size = (size, ) if isinstance(size, int) else tuple(size)
-    shape = size + np.broadcast_shapes(mean.shape, cov.shape[:-1])
-    X = np.random.standard_normal((*shape, 1)).astype(np.float32)
-    L = np.linalg.cholesky(cov)
-    sample = (L @ X).reshape(shape) + mean
-    if dim == 1:
-        sample = np.squeeze(sample, axis=-1)
-    return sample
-
-def normal_sample(mean, cov, nsamples=1):
-    """Generate nsamples from a multivariate Normal distribution
-
-    Inputs
-    ------
-    mean: (d, ) Mean of distribution
-    cov: (d, d) Covariance of distribution
-    nsamples: (int) Number of samples
-    
-    Returns
-    -------
-    samples: (d, nsamples) Column vector of samples
-    """
-
-    # Generate standard normal samples
-    mean = np.atleast_1d(mean)
-    cov = np.atleast_1d(cov)
-    dim = len(mean)
-    standard_normal_samples = np.random.randn(dim, nsamples)
-    # Apply Cholesky factorization on the covariance matrix
-    try:
-        cholesky_factor = np.linalg.cholesky(cov)
-    except np.linalg.LinAlgError:
-        cov = nearest_positive_definite(cov)
-        cholesky_factor = np.linalg.cholesky(cov)
-    # Generate the samples
-    samples = mean[:,np.newaxis] + cholesky_factor @ standard_normal_samples
-    samples = np.squeeze(samples)
-    return samples
+    # If N=1, return a scalar
+    if N == 1:
+        return logpdf.item()
+    # Otherwise, return as a 1D array
+    else:
+        return logpdf.flatten()
 
 def sample_multivariate_gaussian(mu: np.ndarray, sigma: np.ndarray, N: int = 1) -> np.ndarray:
     """
@@ -190,28 +84,39 @@ def sample_multivariate_gaussian(mu: np.ndarray, sigma: np.ndarray, N: int = 1) 
     
     # Transpose to get (d, N) output format
     return samples.T
-
-def banana_logpdf(x,a=1.0,b=100.0):
-    logpdf = (a-x[0])**2 + b * (x[1] - x[0]**2)**2
-    #logpdf = np.exp(-0.5 * (x[0])**2 + x[1]**2) - np.exp(-0.5 / 1.0 * (x[0]**2 + x[1]**2))
-    #logpdf = np.log(logpdf)
-    #logpdf = (np.sin(10*x[0]*x[1]) + x[1]**2)*4
-    return -logpdf
-    #return logpdf
     
-def laplace_approx(x0, logpost, optmethod):
-    """Perform the laplace approximation, returning the MAP point and an approximation of the covariance
-    :param x0: (nparam, ) array of initial parameters
-    :param logpost: f(param) -> log posterior pdf
+def laplace_approx(x0: np.ndarray, logpost: Callable, optmethod: str):
+    """Perform the laplace approximation, returning the MAP point and an approximation of the covariance matrix.
 
-    :returns map_point: (nparam, ) MAP of the posterior
-    :returns cov_approx: (nparam, nparam), covariance matrix for Gaussian fit at MAP
+    Parameters
+    ----------
+    x0 : (d, 1) array
+        Initial guess for the MAP point
+    logpost : callable
+        Function to compute the log posterior
+    optmethod : str
+        Optimization method to use (e.g., 'L-BFGS-B', 'BFGS', etc.)
+
+    Returns
+    -------
+    x_map : (d, 1) array
+        MAP point
+    cov_approx : (d, d) array
+        Approximation of the covariance matrix
     """
+
+    # Enforce x0 to be a column vector
+    assert x0.ndim == 2 and x0.shape[1] == 1, "x0 must be a column vector"
+    d = x0.shape[0]
+
+    # Change x0 to be a 1D array for optimization
+    x0 = x0.flatten()
+    
     # Gradient free method to obtain optimum
     neg_post = lambda x: -logpost(x)
-    # Use differential evolution to find a robust global minimum
-    # result = scipy.optimize.differential_evolution(neg_post, bounds, strategy='best1bin', maxiter=50, popsize=15, tol=1e-6, disp=True)
-    res = scipy.optimize.minimize(neg_post, x0)#, method=optmethod, tol=1e-6, options={'maxiter': 1000, 'disp': True})
+    
+    # Initial optimization using a gradient-free method
+    res = scipy.optimize.minimize(neg_post, x0)
     print('----------------------------------------------------------------------------')
     print('----------------------------------------------------------------------------')
     print('--------------------First optimization done---------------------------------')
@@ -220,60 +125,50 @@ def laplace_approx(x0, logpost, optmethod):
     # Gradient method which also approximates the inverse of the hessian
     res = scipy.optimize.minimize(neg_post, res.x*0.95, method=optmethod, tol=1e-6, options={'maxiter': 5000, 'disp': True})
     map_point = res.x
+    # Make map point a column vector
+    map_point = map_point[:, np.newaxis] if map_point.ndim == 1 else map_point
     cov_approx = res.hess_inv
     return map_point, cov_approx
 
-def log_banana(x,co):
-    if (len(x.shape) == 1):
-        x = x[np.newaxis, :]
-    N, d = x.shape
-    x1p = x[:, 0]
-    x2p = x[:, 1] + (np.square(x[:, 0]) + 1)
-    xp = np.concatenate((x1p[:, np.newaxis], x2p[:, np.newaxis]), axis=1)
-    sigma = np.array([[1, 0.9], [0.9, 1]])
-    mu = np.array([0, 0])
-    preexp = 1.0 / (2.0 * np.pi)**(d/2) / np.linalg.det(sigma)**0.5
-    diff = xp - np.tile(mu[np.newaxis, :], (N, 1))
-    sol = np.linalg.solve(sigma, diff.T)
-    inexp = np.einsum("ij,ij->j", diff.T, sol)
-    co+=1
-    return np.log(preexp) - 0.5 * inexp, co
+def log_banana(x: np.ndarray, mu: np.ndarray, sigma: np.ndarray) -> np.ndarray:
+    """
+    Log pdf of the banana distribution.
 
-def lognormpdf_univariate(x, mean, cov):
-    """Compute the log pdf of a univariate Normal distribution
-    
-    Inputs
-    ------
-    x : (float) variable of interest
-    mean : (float) mean of the distribution
-    cov  : (float) covariance of the distribution
+    Parameters
+    ----------
+    x : (d, N) array
+        Points at which to evaluate the log PDF
+    mu : (d, 1) or (d,) array
+        Mean of the distribution (column vector or 1D array)
+    sigma : (d, d) array
+        Covariance matrix
     
     Returns
     -------
-    logpdf: (float) log pdf value
+    logpdf : float or (N,) array
+        Log PDF value(s) - scalar if N=1, array otherwise
     """
 
-    preexp = 1.0 / (2.0 * np.pi)**(0.5) / (cov)**0.5
-    diff = x - mean
-    inexp = diff**2/cov
-    logpdf = np.log(preexp) - 0.5 * inexp
-    return logpdf
+    # Assert that x is 2D
+    assert x.ndim == 2, "x must be a 2D array"
 
-def invgamma_univariate(x, alpha, beta):
-    """Compute the log pdf of a univariate Inverse Gamma distribution
-    
-    Inputs
-    ------
-    x : (float) variable of interest
-    alpha : (float) shape parameter
-    beta  : (float) scale parameter
-    
-    Returns
-    -------
-    logpdf: (float) log pdf value
-    """
+    # Flatten mean to handle both (d,) and (d, 1) inputs
+    mu = mu.flatten()  # Now guaranteed to be (d,)
 
-    logpdf = alpha*np.log(beta) - scipy.special.gammaln(alpha) - (alpha+1)*np.log(x) - beta/x
+    # Check if x is 1D and reshape if necessary
+    if x.ndim == 1:
+        x = x[:, np.newaxis]
+    d, N = x.shape
+
+    # Compute the transformation
+    x0 = x[0, :]; x1 = x[1, :]
+    y0 = x0; y1 = x1 - y0**2
+
+    y = np.vstack((y0, y1))
+
+    # Compute the log PDF using the multivariate normal distribution
+    logpdf = lognormpdf(y, mu, sigma)
+
     return logpdf
 
 def nearest_positive_definite(A):
@@ -299,24 +194,71 @@ def nearest_positive_definite(A):
 
     return A3
 
-def is_positive_definite(A):
-    """Check if a matrix A is positive definite by attempting Cholesky decomposition."""
+def is_positive_definite(A: np.ndarray) -> bool:
+    """
+    Check if a matrix A is positive definite by attempting Cholesky decomposition.
+    
+    Parameters
+    ----------
+    A : (d, d) array
+        Matrix to check for positive definiteness
+    
+    Returns
+    -------
+    is_pd : bool
+        True if A is positive definite, False otherwise
+    """
     try:
         np.linalg.cholesky(A)
         return True
     except np.linalg.LinAlgError:
         return False
     
-def batched_variance(data, batch_size):
-    """Calculates the variance of a dataset using a batched approach."""
-
-    n_batches = int(np.ceil(len(data) / batch_size))
-    batch_variances = []
-
+def batched_variance(data: np.ndarray, batch_size: int) -> np.ndarray:
+    """
+    Calculates the variance of a dataset using a batched approach.
+    
+    Parameters
+    ----------
+    data : (d, N) array
+        Input data for which to compute the variance, where d is the number of dimensions
+        and N is the number of samples
+    batch_size : int
+        Size of each batch to process
+    
+    Returns
+    -------
+    variance : np.ndarray
+        Array of shape (d,) containing the variance for each dimension
+    """
+    # For (d, N) data, we need to compute variance along axis=1
+    d, n_samples = data.shape
+    n_batches = int(np.ceil(n_samples / batch_size))
+    
+    # Initialize arrays for the running calculation
+    count = np.zeros(d)
+    mean = np.zeros(d)
+    M2 = np.zeros(d)  # Sum of squared differences from the mean
+    
+    # Process each batch
     for i in range(n_batches):
         start = i * batch_size
-        end = min((i + 1) * batch_size, len(data))
-        batch = data[start:end]
-        batch_variances.append(np.var(batch, ddof=1))  # Sample variance
-
-    return np.mean(batch_variances)
+        end = min((i + 1) * batch_size, n_samples)
+        batch = data[:, start:end]
+        batch_size_actual = end - start
+        
+        # Update running statistics using Welford's online algorithm for each dimension
+        batch_mean = np.mean(batch, axis=1)  # Mean for each dimension
+        batch_var = np.var(batch, axis=1, ddof=0) * batch_size_actual  # Unnormalized variance
+        
+        # Combine with previous batches (for each dimension)
+        new_count = count + batch_size_actual
+        delta = batch_mean - mean
+        mean = mean + delta * (batch_size_actual / new_count)
+        M2 = M2 + batch_var + delta**2 * count * batch_size_actual / new_count
+        count = new_count
+    
+    # Calculate the variance with Bessel's correction
+    variance = np.divide(M2, count - 1, out=np.zeros_like(M2), where=count > 1)
+    
+    return variance
