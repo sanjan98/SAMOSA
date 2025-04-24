@@ -32,7 +32,7 @@ class MCMCsampler:
         self.proposal = proposal
         self.model = model
         self.initial_state = ChainState(position=initial_position, **model(initial_position), metadata={
-            'covariance': proposal.sigma,
+            'covariance': proposal.sigma if hasattr(proposal, 'sigma') else proposal.proposal.sigma,
             'mean': initial_position,
             'lambda': 2.4**2 / dim,
             'acceptance_probability': 0.0,

@@ -44,7 +44,7 @@ class AdaptiveProposal(ProposalProtocol):
     def __init__(self, base_proposal: ProposalProtocol, adapter: Optional[AdapterBase] = None):
         self.proposal = base_proposal
         self.adapter = adapter
-    
+        
     def sample(self, current_state: ChainState) -> ChainState:
         """Sample from the base proposal"""
         return self.proposal.sample(current_state)
