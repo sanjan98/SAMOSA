@@ -14,7 +14,7 @@ from samosa.core.state import ChainState
 
 from typing import List, Any, Optional, Dict, Tuple
 
-def get_position_from_states(samples: List[ChainState]) -> np.ndarray:
+def get_position_from_states(samples: List[ChainState], burnin: Optional[float] = 0.25) -> np.ndarray:
     """
     From a list of ChainState objects, extract the position of each state.
 
@@ -22,6 +22,8 @@ def get_position_from_states(samples: List[ChainState]) -> np.ndarray:
     ----------
     samples : list of ChainState
         List of ChainState objects.
+    burnin : float, optional
+        Fraction of samples to discard as burn-in. Default is 0.25.
 
     Returns
     -------
@@ -37,6 +39,13 @@ def get_position_from_states(samples: List[ChainState]) -> np.ndarray:
     
     # Extract the position from each ChainState object
     positions = [np.ravel(s.position) for s in samples]
+
+    # Discard the burn-in samples
+    if burnin > 0:
+        n_burnin = int(len(positions) * burnin)
+        positions = positions[n_burnin:]
+    elif burnin < 0:
+        raise ValueError("Burn-in must be a positive value.")
     
     # Convert to numpy array and transpose to (d, N) format
     return np.column_stack(positions)

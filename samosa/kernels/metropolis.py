@@ -23,6 +23,12 @@ class MetropolisHastingsKernel(KernelProtocol):
     def propose(self, proposal: ProposalProtocol, current_state: ChainState) -> ChainState:
         """
         Generate a candidate state from the current state using the proposal.
+
+        Parameters:
+            proposal: Proposal distribution
+            current_state: Current state of the chain
+        Returns:
+            proposed_state: Proposed state
         """
         # Sample a new state using the proposal
         proposed_position = proposal.sample(current_state).position
@@ -38,6 +44,13 @@ class MetropolisHastingsKernel(KernelProtocol):
     def acceptance_ratio(self, proposal: ProposalProtocol, current: ChainState, proposed: ChainState) -> float:
         """
         Compute the log acceptance probability for the proposed state.
+
+        Parameters:
+            proposal: Proposal distribution
+            current: Current state of the chain
+            proposed: Proposed state of the chain
+        Returns:
+            ar: Acceptance ratio
         """
         logq_forward, logq_reverse = proposal.proposal_logpdf(current, proposed)
         
@@ -54,6 +67,12 @@ class MetropolisHastingsKernel(KernelProtocol):
     def adapt(self, proposal: ProposalProtocol, proposed: ChainState) -> None:
         """
         Adapt the proposal based on the proposed state.
+
+        Parameters:
+            proposal: Proposal distribution
+            proposed: Proposed state of the chain
+        Returns:
+            None
         """
 
         # Check if the proposal has an adapt method

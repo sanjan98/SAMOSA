@@ -57,7 +57,6 @@ class MCMCsampler:
             None, but saves the chain states to a file.
         """
 
-        self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
         
         # Initialize the chain state
@@ -109,7 +108,8 @@ class MCMCsampler:
         with open(f"{output_dir}/samples.pkl", "wb") as f:
             pickle.dump(samples, f)
 
-    def load_samples(self) -> List[ChainState]:
+    @staticmethod
+    def load_samples(output_dir: str) -> List[ChainState]:
         """
         Load MCMC samples from a pickle file.
 
@@ -121,6 +121,6 @@ class MCMCsampler:
         -------
             samples (list): List of ChainState objects representing the MCMC samples.
         """
-        with open(f'{self.output_dir}/samples.pkl', "rb") as f:
-            self.samples = pickle.load(f)
-            return self.samples
+        with open(f'{output_dir}/samples.pkl', "rb") as f:
+            samples = pickle.load(f)
+            return samples
