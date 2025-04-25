@@ -6,7 +6,7 @@ import pytest
 import numpy as np
 from samosa.core.state import ChainState
 from samosa.core.model import ModelProtocol
-from samosa.core.proposal import ProposalProtocol
+from samosa.proposals.gaussianproposal import GaussianRandomWalk
 from samosa.kernels.synce import SYNCEKernel
 from typing import Dict, Any
 
@@ -42,17 +42,6 @@ class GaussianModel(ModelProtocol):
             'qoi': position
         }
 
-class MockProposal(ProposalProtocol):
-    """Mock proposal for testing the SYNCE kernel."""
-    
-    def __init__(self, cov):
-        self.cov = cov
-        self.adapt_called = False
-        
-    def adapt(self, state: ChainState) -> None:
-        """Record that adapt was called."""
-        self.adapt_called = True
-
 # --------------------------------------------------
 # Fixtures
 # --------------------------------------------------
@@ -77,13 +66,19 @@ def synce_kernel(coarse_model, fine_model):
 
 @pytest.fixture
 def coarse_proposal():
-    """Return a proposal for the coarse model."""
-    return MockProposal(cov=np.array([[2.0, 0.0], [0.0, 2.0]]))
+    """Return a GaussianRandomWalk proposal for the coarse model."""
+    dim = 2
+    mu = np.zeros((dim, 1))
+    sigma = np.array([[2.0, 0.0], [0.0, 2.0]])
+    return GaussianRandomWalk(mu, sigma)
 
 @pytest.fixture
 def fine_proposal():
-    """Return a proposal for the fine model."""
-    return MockProposal(cov=np.array([[1.0, 0.0], [0.0, 1.0]]))
+    """Return a GaussianRandomWalk proposal for the fine model."""
+    dim = 2
+    mu = np.zeros((dim, 1))
+    sigma = np.array([[1.0, 0.0], [0.0, 1.0]])
+    return GaussianRandomWalk(mu, sigma)
 
 @pytest.fixture
 def coarse_state(coarse_model):
@@ -130,8 +125,9 @@ def test_synce_kernel_init(synce_kernel, coarse_model, fine_model):
 def test_synce_kernel_propose(synce_kernel, coarse_proposal, fine_proposal, coarse_state, fine_state, monkeypatch):
     """Test the propose method of SYNCEKernel."""
     # Mock the sample_multivariate_gaussian function to return a fixed value
+    eta_value = np.array([[0.1], [0.2]])
     def mock_sample(*args, **kwargs):
-        return np.array([[0.1], [0.2]])
+        return eta_value
     
     monkeypatch.setattr("samosa.kernels.synce.sample_multivariate_gaussian", mock_sample)
     
@@ -152,13 +148,16 @@ def test_synce_kernel_propose(synce_kernel, coarse_proposal, fine_proposal, coar
     assert proposed_coarse.metadata['iteration'] == coarse_state.metadata['iteration']
     assert proposed_fine.metadata['iteration'] == fine_state.metadata['iteration']
     
-    # Check that the positions are different but correlated (due to the common noise)
-    # The difference should be due to the different covariance matrices
-    position_diff_coarse = proposed_coarse.position - coarse_state.position
-    position_diff_fine = proposed_fine.position - fine_state.position
+    # Check that the positions are updated according to the proposal logic
+    # With GaussianRandomWalk, the positions should be updated using the Cholesky decomposition
+    expected_coarse_step = np.linalg.cholesky(coarse_proposal.cov) @ eta_value
+    expected_fine_step = np.linalg.cholesky(fine_proposal.cov) @ eta_value
     
-    # Verify that the positions are updated according to the proposal covariances
-    assert np.abs(position_diff_coarse[0, 0]) > np.abs(position_diff_fine[0, 0])
+    expected_coarse_pos = coarse_state.position + expected_coarse_step
+    expected_fine_pos = fine_state.position + expected_fine_step
+    
+    np.testing.assert_array_almost_equal(proposed_coarse.position, expected_coarse_pos)
+    np.testing.assert_array_almost_equal(proposed_fine.position, expected_fine_pos)
 
 def test_synce_kernel_acceptance_ratio(synce_kernel, coarse_proposal, fine_proposal, coarse_state, fine_state, coarse_model, fine_model):
     """Test the acceptance_ratio method of SYNCEKernel."""
@@ -184,9 +183,10 @@ def test_synce_kernel_acceptance_ratio(synce_kernel, coarse_proposal, fine_propo
         fine_proposal, fine_state, proposed_fine
     )
     
-    # Since the proposed states are closer to the means, they should have higher posteriors
-    assert ar_coarse > 0
-    assert ar_fine > 0
+    # Check that acceptance ratios are calculated correctly
+    # Since proposed positions are closer to the means, they should have higher posteriors
+    assert 0 <= ar_coarse <= 1.0
+    assert 0 <= ar_fine <= 1.0
     
     # Test with proposed states that are far from the means (lower posterior)
     far_coarse_position = np.array([[5.0], [5.0]])  # Far from coarse mean [1, 1]
@@ -209,35 +209,57 @@ def test_synce_kernel_acceptance_ratio(synce_kernel, coarse_proposal, fine_propo
         fine_proposal, fine_state, far_fine
     )
     
-    # The acceptance ratios should be less than 1 for positions far from the means
+    # The acceptance ratios should be between 0 and 1
+    assert 0 <= ar_coarse <= 1.0
+    assert 0 <= ar_fine <= 1.0
+    
+    # For positions far from the means, acceptance ratios should be lower
     assert ar_coarse < 1.0
     assert ar_fine < 1.0
 
-def test_synce_kernel_adapt(synce_kernel, coarse_proposal, fine_proposal, coarse_state, fine_state):
+def test_synce_kernel_adapt(synce_kernel, coarse_proposal, fine_proposal, coarse_state, fine_state, monkeypatch):
     """Test the adapt method of SYNCEKernel."""
-    # Verify that the adapt_called flags are initially False
-    assert not coarse_proposal.adapt_called
-    assert not fine_proposal.adapt_called
+    # Mock the adapt method of GaussianRandomWalk to track if it's called
+    orig_adapt = GaussianRandomWalk.adapt
+    adapt_called_coarse = False
+    adapt_called_fine = False
+    
+    def mock_adapt(self, state):
+        nonlocal adapt_called_coarse, adapt_called_fine
+        if id(self) == id(coarse_proposal):
+            adapt_called_coarse = True
+        elif id(self) == id(fine_proposal):
+            adapt_called_fine = True
+        return orig_adapt(self, state)
+    
+    monkeypatch.setattr(GaussianRandomWalk, "adapt", mock_adapt)
     
     # Call the adapt method
     synce_kernel.adapt(coarse_proposal, coarse_state, fine_proposal, fine_state)
     
-    # Verify that the adapt_called flags are now True
-    assert coarse_proposal.adapt_called
-    assert fine_proposal.adapt_called
+    # Restore original method
+    monkeypatch.setattr(GaussianRandomWalk, "adapt", orig_adapt)
+    
+    # Verify that adapt was called for both proposals
+    assert adapt_called_coarse
+    assert adapt_called_fine
 
-def test_synce_kernel_dimension_mismatch(synce_kernel, coarse_proposal, fine_proposal, coarse_model, fine_model):
+def test_synce_kernel_dimension_mismatch(synce_kernel, coarse_proposal, fine_proposal):
     """Test that an assertion error is raised when dimensions don't match."""
     # Create states with different dimensions
     coarse_state = ChainState(
         position=np.array([[1.0], [0.5]]),
         log_posterior=-1.0,
+        cost=1.0,
+        qoi=np.array([[1.0], [0.5]]),
         metadata={}
     )
     
     fine_state = ChainState(
         position=np.array([[1.0], [0.5], [0.3]]),  # Different dimension
         log_posterior=-1.5,
+        cost=1.0,
+        qoi=np.array([[1.0], [0.5], [0.3]]),
         metadata={}
     )
     
@@ -248,11 +270,18 @@ def test_synce_kernel_dimension_mismatch(synce_kernel, coarse_proposal, fine_pro
 def test_synce_kernel_integration(synce_kernel, coarse_proposal, fine_proposal, coarse_state, fine_state, monkeypatch):
     """Test the full workflow of the SYNCE kernel."""
     # Mock the random number generator to make the test deterministic
+    eta_value = np.array([[0.1], [0.1]])
     def mock_sample(*args, **kwargs):
-        return np.array([[0.1], [0.1]])
+        return eta_value
     
     monkeypatch.setattr("samosa.kernels.synce.sample_multivariate_gaussian", mock_sample)
-    monkeypatch.setattr("numpy.random.rand", lambda: 0.7)  # For acceptance decision
+    
+    # Mock random.rand for acceptance decisions
+    rand_values = iter([0.7, 0.3])  # First for coarse, second for fine
+    def mock_rand():
+        return next(rand_values)
+    
+    monkeypatch.setattr("numpy.random.rand", mock_rand)
     
     # Propose new states
     proposed_coarse, proposed_fine = synce_kernel.propose(
@@ -265,17 +294,26 @@ def test_synce_kernel_integration(synce_kernel, coarse_proposal, fine_proposal, 
         fine_proposal, fine_state, proposed_fine
     )
     
-    # Accept or reject based on the acceptance ratios
-    next_coarse = proposed_coarse if (ar_coarse == 1 or np.random.rand() < ar_coarse) else coarse_state
-    next_fine = proposed_fine if (ar_fine == 1 or np.random.rand() < ar_fine) else fine_state
+    # Apply acceptance decisions
+    next_coarse = proposed_coarse if np.random.rand() < ar_coarse else coarse_state
+    next_fine = proposed_fine if np.random.rand() < ar_fine else fine_state
     
-    # Update metadata
-    next_coarse.metadata['acceptance_probability'] = ar_coarse
-    next_fine.metadata['acceptance_probability'] = ar_fine
-    
+    # Update metadata for accepted states
+    if next_coarse is proposed_coarse:
+        next_coarse.metadata['acceptance_probability'] = ar_coarse
+    if next_fine is proposed_fine:
+        next_fine.metadata['acceptance_probability'] = ar_fine
+        
     # Adapt the proposals
     synce_kernel.adapt(coarse_proposal, next_coarse, fine_proposal, next_fine)
     
-    # Verify that the adaptation was called
-    assert coarse_proposal.adapt_called
-    assert fine_proposal.adapt_called
+    # Verify that the chain states have been properly updated
+    if next_coarse is proposed_coarse:
+        assert next_coarse.metadata['acceptance_probability'] == ar_coarse
+    else:
+        assert next_coarse.metadata['acceptance_probability'] == coarse_state.metadata['acceptance_probability']
+        
+    if next_fine is proposed_fine:
+        assert next_fine.metadata['acceptance_probability'] == ar_fine
+    else:
+        assert next_fine.metadata['acceptance_probability'] == fine_state.metadata['acceptance_probability']

@@ -54,7 +54,8 @@ class MCMCsampler:
 
         Returns:
         -------
-            None, but saves the chain states to a file.
+            acceptance_rate (float): The acceptance rate of the MCMC sampler.
+            Also saves the samples to a file.
         """
 
         os.makedirs(output_dir, exist_ok=True)
@@ -107,6 +108,10 @@ class MCMCsampler:
         # Save the samples to a file
         with open(f"{output_dir}/samples.pkl", "wb") as f:
             pickle.dump(samples, f)
+        
+        # Save the acceptance rate
+        acceptance_rate = acceptance_count / self.n_iterations
+        return acceptance_rate
 
     @staticmethod
     def load_samples(output_dir: str) -> List[ChainState]:

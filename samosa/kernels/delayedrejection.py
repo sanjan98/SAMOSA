@@ -119,11 +119,19 @@ class DelayedRejectionKernel(KernelProtocol):
             logq_y2_to_y1, logq_y1_to_y2 = proposal.proposal_logpdf(second_stage, first_stage)
         
         # Calculate first stage rejection probability
-        alpha_1 = min(1.0, np.exp((first_stage.log_posterior - current.log_posterior) + (logq_reverse_1 - logq_forward_1)))
-        
+        check_alpha_1 = (first_stage.log_posterior - current.log_posterior) + (logq_reverse_1 - logq_forward_1)
+        if check_alpha_1 > 0:
+            alpha_1 = 1.0
+        else:
+            alpha_1 = np.exp(check_alpha_1)
+
         # Calculate hypothetical reverse first stage rejection probability
-        alpha_1_reverse = min(1.0, np.exp((first_stage.log_posterior - second_stage.log_posterior) + (logq_y1_to_y2 - logq_y2_to_y1)))
-        
+        check_alpha_1_reverse = (first_stage.log_posterior - second_stage.log_posterior) + (logq_y1_to_y2 - logq_y2_to_y1)
+        if check_alpha_1_reverse > 0:
+            alpha_1_reverse = 1.0
+        else:
+            alpha_1_reverse = np.exp(check_alpha_1_reverse)    
+
         # Calculate the numerator and denominator terms
         numerator = (1 - alpha_1) * np.exp((second_stage.log_posterior - current.log_posterior) + (logq_reverse_2 - logq_forward_2))
         denominator = 1 - alpha_1_reverse
