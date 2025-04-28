@@ -13,8 +13,6 @@ import copy
 
 import pickle
 
-# Stopped here, check this file and write some tests for it
-
 class coupledMCMCsampler:
     """
     Class for a coupled chain MCMC sampler.
@@ -115,6 +113,9 @@ class coupledMCMCsampler:
 
             # Adapt the proposal distribution
             self.kernel.adapt(self.proposal_coarse, current_coarse_state, self.proposal_fine, current_fine_state)
+
+            if hasattr(self.kernel, 'adapt_maps'):
+                self.kernel.adapt_maps(samples_coarse, samples_fine)
 
             # Store the current state
             samples_coarse.append(copy.deepcopy(current_coarse_state))

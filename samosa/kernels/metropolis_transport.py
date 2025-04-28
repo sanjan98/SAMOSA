@@ -1,0 +1,114 @@
+"""
+Class file for the Metropolis-Hastings kernel with transport maps
+"""
+
+# Imports
+import numpy as np
+from samosa.core.state import ChainState
+from samosa.core.kernel import KernelProtocol
+from samosa.core.proposal import ProposalProtocol
+from samosa.core.model import ModelProtocol
+
+from typing import Any, List
+
+class TransportMetropolisHastingsKernel(KernelProtocol):
+    """
+    Metropolis-Hastings kernel for MCMC sampling with transport maps.
+    """
+
+    def __init__(self, model: ModelProtocol, map: Any):
+        """
+        Initialize the Metropolis-Hastings kernel with a model.
+        """
+        self.model = model
+        self.map = map
+
+    def propose(self, proposal: ProposalProtocol, current_state: ChainState) -> ChainState:
+        """
+        Generate a candidate state from the current state using the map with a proposal.
+
+        Parameters:
+            proposal: Proposal distribution
+            current_state: Current state of the chain
+        Returns:
+            proposed_state: Proposed state
+        """
+
+        # Get the current position in the reference space
+        r, _ = self.map.forward(current_state.position)
+        current_reference = ChainState(position=r, log_posterior=None)
+       
+        # Sample a new state using the proposal
+        rprime = proposal.sample(current_reference).position
+
+        # Send the proposed state back to the original space
+        proposed_position, _ = self.map.inverse(rprime)
+        
+        # Compute the attributes of the proposed state
+        model_result = self.model(proposed_position)
+
+        # Create a new ChainState object for the proposed state
+        proposed_state = ChainState(position=proposed_position, **model_result, metadata=current_state.metadata.copy())
+        
+        return proposed_state
+    
+    def acceptance_ratio(self, proposal: ProposalProtocol, current: ChainState, proposed: ChainState) -> float:
+        """
+        Compute the log acceptance probability for the proposed state.
+
+        Parameters:
+            proposal: Proposal distribution
+            current: Current state of the chain
+            proposed: Proposed state of the chain
+        Returns:
+            ar: Acceptance ratio
+        """
+
+        r, logdet_current = self.map.forward(current.position)
+        rprime, logdet_proposed = self.map.forward(proposed.position)
+
+        current_reference = ChainState(position=r, log_posterior=None)
+        proposed_reference = ChainState(position=rprime, log_posterior=None)
+
+        logq_forward, logq_reverse = proposal.proposal_logpdf(current_reference, proposed_reference)
+        
+        # Calculate the acceptance ratio
+        check = (proposed.log_posterior + logq_reverse - logdet_proposed) - (current.log_posterior + logq_forward - logdet_current)
+        if check > 0:
+            ar = 1.0
+        else:
+            ar = np.exp(check)
+
+        # Calculate the acceptance ratio
+        return ar
+    
+    def adapt(self, proposal: ProposalProtocol, proposed: ChainState) -> None:
+        """
+        Adapt the proposal based on the proposed state.
+
+        Parameters:
+            proposal: Proposal distribution
+            proposed: Proposed state of the chain
+        Returns:
+            None
+        """
+
+        # Check if the proposal has an adapt method
+        if hasattr(proposal, 'adapt'):
+            proposal.adapt(proposed)
+
+        return None
+    
+    def adapt_map(self, samples: List[ChainState]) -> None:
+        """
+        Adapt the transport map based on the samples.
+
+        Parameters:
+            samples: List of ChainState objects
+        Returns:
+            None
+        """
+        if hasattr(self.map, 'adapt'):
+            self.map.adapt(samples)
+
+    

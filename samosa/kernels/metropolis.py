@@ -1,5 +1,5 @@
 """
-Class file fpr the Metropolis-Hastings kernel
+Class file for the Metropolis-Hastings kernel
 """
 
 # Imports

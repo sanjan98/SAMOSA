@@ -68,6 +68,9 @@ class MCMCsampler:
         # Run the MCMC sampling loop
         for i in range(1, self.n_iterations+1):
 
+            if i % 1000 == 0:
+                print(f"Iteration {i}/{self.n_iterations}")
+
             # Check for delayed rejection kernel
             if self.is_delayed_rejection:
                 proposed_state = self.kernel.propose(self.proposal, current_state)
@@ -101,6 +104,10 @@ class MCMCsampler:
 
             # Adapt the proposal distribution
             self.kernel.adapt(self.proposal, current_state)
+
+            # Adapt the transport map
+            if hasattr(self.kernel, 'adapt_map') and i > 1:
+                self.kernel.adapt_map(samples[:i])
 
             # Store the current state
             samples.append(copy.deepcopy(current_state))

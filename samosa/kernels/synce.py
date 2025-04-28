@@ -50,9 +50,9 @@ class SYNCEKernel(KernelProtocol):
         eta = sample_multivariate_gaussian(np.zeros((dim, 1)), np.eye(dim))
 
         # Propose a move for the low-fidelity chain
-        proposed_coarse_position = current_coarse_state.position + np.linalg.cholesky(proposal_coarse.cov) @ eta
+        proposed_coarse_position = current_coarse_state.position + np.linalg.cholesky(proposal_coarse.cov) @ eta if hasattr(proposal_coarse, 'cov') else current_coarse_state.position + np.linalg.cholesky(proposal_coarse.proposal.cov) @ eta
         # Propose a move for the high-fidelity chain
-        proposed_fine_position = current_fine_state.position + np.linalg.cholesky(proposal_fine.cov) @ eta
+        proposed_fine_position = current_fine_state.position + np.linalg.cholesky(proposal_fine.cov) @ eta if hasattr(proposal_fine, 'cov') else current_fine_state.position + np.linalg.cholesky(proposal_fine.proposal.cov) @ eta
 
         # Evaluate the low-fidelity model
         coarse_model_result = self.coarse_model(proposed_coarse_position)

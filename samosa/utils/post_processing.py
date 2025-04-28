@@ -41,7 +41,7 @@ def get_position_from_states(samples: List[ChainState], burnin: Optional[float] 
     positions = [np.ravel(s.position) for s in samples]
 
     # Discard the burn-in samples
-    if burnin > 0:
+    if burnin >= 0:
         n_burnin = int(len(positions) * burnin)
         positions = positions[n_burnin:]
     elif burnin < 0:
