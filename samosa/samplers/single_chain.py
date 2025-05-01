@@ -24,9 +24,11 @@ class MCMCsampler:
         model (BaseModel): The model used for computing posterior values.
         initial_state (ChainState): The initial state of the chain.
         n_iterations (int): Number of iterations to run the sampler.
+        print_iteration (int): Number of iterations between prints.
+        save_iteration (int): Number of iterations between saves.
     """
     
-    def __init__(self,  model: ModelProtocol, kernel: KernelProtocol, proposal: ProposalProtocol, initial_position: np.ndarray, n_iterations: int):
+    def __init__(self,  model: ModelProtocol, kernel: KernelProtocol, proposal: ProposalProtocol, initial_position: np.ndarray, n_iterations: int, print_iteration: int = 1000, save_iteraton: int = 1000):
 
         dim = initial_position.shape[0]
         self.dim = dim
@@ -41,6 +43,8 @@ class MCMCsampler:
             'iteration': 1
             })
         self.n_iterations = n_iterations
+        self.print_iteration = print_iteration
+        self.save_iterations = save_iteraton
         self.is_delayed_rejection = isinstance(kernel, DelayedRejectionKernel)
 
     def run(self, output_dir: str) -> None:
@@ -68,7 +72,7 @@ class MCMCsampler:
         # Run the MCMC sampling loop
         for i in range(1, self.n_iterations+1):
 
-            if i % 1000 == 0:
+            if i % self.print_iteration == 0:
                 print(f"Iteration {i}/{self.n_iterations}")
 
             # Check for delayed rejection kernel
@@ -112,6 +116,12 @@ class MCMCsampler:
             # Store the current state
             samples.append(copy.deepcopy(current_state))
 
+            # Save the samples at specified intervals
+            if i % self.save_iterations == 0:
+                with open(f"{output_dir}/samples_{i}.pkl", "wb") as f:
+                    pickle.dump(samples, f)
+                print(f"Saved samples at iteration {i} to {output_dir}/samples_{i}.pkl")
+
         # Save the samples to a file
         with open(f"{output_dir}/samples.pkl", "wb") as f:
             pickle.dump(samples, f)
@@ -121,7 +131,7 @@ class MCMCsampler:
         return acceptance_rate
 
     @staticmethod
-    def load_samples(output_dir: str) -> List[ChainState]:
+    def load_samples(output_dir: str, iteration: int = None) -> List[ChainState]:
         """
         Load MCMC samples from a pickle file.
 
@@ -133,6 +143,14 @@ class MCMCsampler:
         -------
             samples (list): List of ChainState objects representing the MCMC samples.
         """
-        with open(f'{output_dir}/samples.pkl', "rb") as f:
-            samples = pickle.load(f)
-            return samples
+        if iteration is None:
+            with open(f'{output_dir}/samples.pkl', "rb") as f:
+                samples = pickle.load(f)
+                return samples
+        else:
+            file_path = f'{output_dir}/samples_{iteration}.pkl'
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"The file {file_path} does not exist.")
+            with open(f'{output_dir}/samples_{iteration}.pkl', "rb") as f:
+                samples = pickle.load(f)
+                return samples
