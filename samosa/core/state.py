@@ -31,8 +31,8 @@ class ChainState:
 
     # Optional to handle having direct knowledge of posterior (eg: for testing purposes)
     log_posterior: Optional[float] = None  
-    prior: Optional[float] = None         
-    likelihood: Optional[float] = None    
+    log_prior: Optional[float] = None         
+    log_likelihood: Optional[float] = None    
     
     # Optional attributes for additional information
     model_output: Optional[np.ndarray] = None
@@ -44,8 +44,8 @@ class ChainState:
 
     def __post_init__(self):
         """Auto-compute log_posterior if possible, but don't validate"""
-        if self.log_posterior is None and self.prior is not None and self.likelihood is not None:
-            self.log_posterior = self.prior + self.likelihood
+        if self.log_posterior is None and self.log_prior is not None and self.log_likelihood is not None:
+            self.log_posterior = self.log_prior + self.log_likelihood
 
     @property
     def posterior(self) -> float:
@@ -53,8 +53,8 @@ class ChainState:
         if self.log_posterior is not None:
             return self.log_posterior
         
-        if self.prior is not None and self.likelihood is not None:
-            return self.prior + self.likelihood
+        if self.log_prior is not None and self.log_likelihood is not None:
+            return self.log_prior + self.log_likelihood
             
         raise ValueError(
             "Posterior undefined. Set either: "
@@ -64,5 +64,5 @@ class ChainState:
 
     def validate(self) -> None:
         """Explicit validation check"""
-        if self.log_posterior is None and (self.prior is None or self.likelihood is None):
+        if self.log_posterior is None and (self.log_prior is None or self.log_likelihood is None):
             raise ValueError("Invalid state: Must provide either log_posterior or both prior+likelihood")
