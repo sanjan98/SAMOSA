@@ -24,11 +24,22 @@ def lognormpdf(x: np.ndarray, mean: np.ndarray, cov: np.ndarray) -> np.ndarray:
     logpdf : float or (N,) array
         Log PDF value(s) - scalar if N=1, array otherwise
     """
-    # Flatten mean to handle both (d,) and (d, 1) inputs
-    mean = mean.flatten()  # Now guaranteed to be (d,)
-    
-    if x.ndim == 1:
-        x = x[:, np.newaxis]
+
+    # Convert scalars to arrays for unified handling
+    if np.isscalar(x):
+        x = np.array([[x]], dtype=float)
+    elif isinstance(x, np.ndarray) and x.ndim == 1:
+        x = x[:, np.newaxis]  # shape (d, N)
+        
+    if np.isscalar(mean):
+        mean = np.array([mean], dtype=float)
+    else:
+        mean = np.asarray(mean).flatten()
+        
+    if np.isscalar(cov):
+        cov = np.array([[cov]], dtype=float)
+    else:
+        cov = np.asarray(cov)
     
     d, N = x.shape
     
