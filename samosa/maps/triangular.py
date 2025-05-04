@@ -13,23 +13,23 @@ from samosa.core.state import ChainState
 from scipy.optimize import minimize
 from scipy.stats import multivariate_normal
 from samosa.utils.post_processing import get_position_from_states
+from samosa.utils.tools import lognormpdf
 from typing import List
 
 class LowerTriangularMap(TransportMap):
     """
     Class for the lower triangular map using MParT.
     
-    Attributes:
+    Attributes:ß
     """
 
-    def __init__(self, samples: List[ChainState], dim: int, total_order: int = 2, adapt_start: int = 500, adapt_end: int = 1000, adapt_interval: int = 100):
+    def __init__(self, dim: int, total_order: int = 2, adapt_start: int = 500, adapt_end: int = 1000, adapt_interval: int = 100):
         
         """
         Initialize the lower triangular map.
         Args:
-            samples: List of ChainState objects to initialize the map.
             dim: Dimension of the map.
-            total_order: Total order of the map.
+            total_order: Total order of the map.ß
             adapt_start: Start iteration for adaptation.
             adapt_end: End iteration for adaptation.
             adapt_interval: Interval for adaptation.
@@ -41,19 +41,12 @@ class LowerTriangularMap(TransportMap):
         self.adapt_end = adapt_end
         self.adapt_interval = adapt_interval
 
-        # Get positions from states
-        positions = get_position_from_states(samples, burnin=0.0)
-        
-        # Standardize the positions of shape (dim, n_samples)
-        self.mean = np.mean(positions, axis=1, keepdims=True)
-        self.std = np.std(positions, axis=1, keepdims=True)
-        # Standardize the positions
-        x = (positions - self.mean) / self.std
-        self.x = x
+        # Set some default values for mean and std
+        self.mean = np.zeros((dim, 1))
+        self.std = np.ones((dim, 1))
 
         # Define the map
         self._define_map()
-        self._optimize_map()
 
     def forward(self, x):
         """
@@ -91,21 +84,21 @@ class LowerTriangularMap(TransportMap):
         # Return the inverse transformed data and log determinant 
         return x, log_det
     
-    def adapt(self, samples: List[ChainState]):
+    def adapt(self, samples: List[ChainState], force_adapt: bool = False):
         """
         Adapt the map to new samples.
         
         Args:
             samples: New samples to adapt the map to.
         """
-
+        
         # Get current iteration
         iteration = samples[-1].metadata['iteration'] + 1
 
         # Check if adaptation is needed
-        if iteration < self.adapt_start or iteration > self.adapt_end:
+        if iteration < self.adapt_start or iteration > self.adapt_end and not force_adapt:
             return None
-        if (iteration - self.adapt_start) % self.adapt_interval != 0:
+        if (iteration - self.adapt_start) % self.adapt_interval != 0 and not force_adapt:
             return None
         
         print(f"Adapting LowerTriangular map at iteration {iteration}")
@@ -172,6 +165,23 @@ class LowerTriangularMap(TransportMap):
             print(component.CoeffMap())
             print(f'Objective value for component {idx + 1}: {self.obj(component.CoeffMap(), component, x_segment):.2E}')
             print('==================')
+
+    def pullback(self, x):
+        """
+        Pull back the input x using the inverse map.
+        
+        Args:
+            x: Input data to be pulled back.
+        Returns:
+            Pulled back data pdf
+        """
+        
+        # Compute the forward map
+        r, logdet = self.forward(x)
+
+        log_pullback_pdf = lognormpdf(r, np.zeros((self.dim, 1)), np.eye(self.dim)) + logdet
+        pull_back_pdf = np.exp(log_pullback_pdf)
+        return pull_back_pdf
 
     @staticmethod
     # Negative log likelihood objective

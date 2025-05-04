@@ -31,7 +31,7 @@ class TransportSYNCEKernel(KernelProtocol):
         self.coarse_map = coarse_map
         self.fine_map = fine_map
         if coupletype not in ['deep', 'direct']:
-            raise ValueError("coupletype must be either 'deep' or 'shallow'")
+            raise ValueError("coupletype must be either 'deep' or 'direct'")
         self.coupletype = coupletype
         
     def propose(self, proposal_coarse: ProposalProtocol, proposal_fine: ProposalProtocol, current_coarse_state: ChainState, current_fine_state: ChainState) -> Tuple[ChainState, ChainState, float, float, float, float]:

@@ -22,7 +22,8 @@ def load_samples(output_dir: str, iteration: int = None) -> List[ChainState]:
 
     Parameters:
     ----------
-        None
+        output_dir (str): Directory where the samples are saved.
+        iteration (int, optional): Iteration number to load specific samples. If None, loads all samples.
 
     Returns:
     -------
@@ -39,6 +40,39 @@ def load_samples(output_dir: str, iteration: int = None) -> List[ChainState]:
         with open(f'{output_dir}/samples_{iteration}.pkl', "rb") as f:
             samples = pickle.load(f)
             return samples
+
+def load_coupled_samples(output_dir: str, iteration: int = None) -> List[ChainState]:
+    """
+    Load coupled MCMC samples from a pickle file.
+
+    Parameters:
+    ----------
+        output_dir (str): Directory where the samples are saved.
+        iteration (int, optional): Iteration number to load specific samples. If None, loads all samples.
+
+    Returns:
+    -------
+        samples_coarse (list): List of ChainState objects representing the MCMC samples.
+        samples_fine (list): List of ChainState objects representing the MCMC samples.
+    """
+    if iteration is None:
+        with open(f'{output_dir}/samples_coarse.pkl', "rb") as f:
+            samples_coarse = pickle.load(f)
+        with open(f'{output_dir}/samples_fine.pkl', "rb") as f:
+            samples_fine = pickle.load(f)
+            return samples_coarse, samples_fine
+    else:
+        file_path_coarse = f'{output_dir}/samples_coarse_{iteration}.pkl'
+        file_path_fine = f'{output_dir}/samples_fine_{iteration}.pkl'
+        if not os.path.exists(file_path_coarse):
+            raise FileNotFoundError(f"The file {file_path_coarse} does not exist.")
+        if not os.path.exists(file_path_fine):
+            raise FileNotFoundError(f"The file {file_path_fine} does not exist.")
+        with open(f'{output_dir}/samples_coarse_{iteration}.pkl', "rb") as f:
+            samples_coarse = pickle.load(f)
+        with open(f'{output_dir}/samples_fine_{iteration}.pkl', "rb") as f:
+            samples_fine = pickle.load(f)
+            return samples_coarse, samples_fine
 
 def get_position_from_states(samples: List[ChainState], burnin: Optional[float] = 0.25) -> np.ndarray:
     """

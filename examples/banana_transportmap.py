@@ -41,14 +41,9 @@ def banana_model(x: np.ndarray) -> Dict[str, Any]:
 # Lets mix and match some kernels and proposals and run MCMC
 
 # This is just a simple example of how to use the samosa package
-from samosa.kernels.metropolis import MetropolisHastingsKernel
-from samosa.kernels.delayedrejection import DelayedRejectionKernel
-from samosa.proposals.gaussianproposal import GaussianRandomWalk, IndependentProposal
-from samosa.proposals.adapters import HaarioAdapter, GlobalAdapter
-from samosa.core.proposal import AdaptiveProposal
-
+from samosa.proposals.gaussianproposal import GaussianRandomWalk
 from samosa.samplers.single_chain import MCMCsampler
-
+from samosa.utils.post_processing import load_samples
 from samosa.utils.post_processing import get_position_from_states
 
 # Load samples from the output directory
@@ -66,7 +61,8 @@ from samosa.maps.triangular import LowerTriangularMap
 model = banana_model
 
 # Define your map using the samples 
-map = LowerTriangularMap(samples, 2, 2, 1, 15000, 5000)
+map = LowerTriangularMap(2, 2, 1, 25000, 5000)
+map.adapt(samples, force_adapt=True)
 
 # Just add a map componenet to the kernel
 kernel = TransportMetropolisHastingsKernel(model, map)
@@ -75,11 +71,11 @@ kernel = TransportMetropolisHastingsKernel(model, map)
 proposal = GaussianRandomWalk(mu=np.zeros((2,1)), sigma=np.eye(2))
 
 # Define the sampler
-sampler = MCMCsampler(model, kernel, proposal, initial_position=samples[-1].position, n_iterations=50000)
+sampler = MCMCsampler(model, kernel, proposal, initial_position=samples[-1].position, n_iterations=50000, save_iteraton=10000)
 ar2 = sampler.run('examples/banana_transport')
 print("Acceptance rate:", ar2)
 
-samples_transport = sampler.load_samples('examples/banana_transport')
+samples_transport = load_samples('examples/banana_transport')
 
 # Get the positions of the samples
 burnin = 0.25
@@ -101,3 +97,39 @@ plt.savefig('examples/banana_transport/trace.png')
 # Plot the lag of the samples
 fig, _ = plot_lag(positions)
 plt.savefig('examples/banana_transport/lag.png')
+
+# Plot the log posterior using seaborn
+plt.figure(figsize=(10, 8))
+import seaborn as sns
+sns.set_style("white")
+
+x1 = np.linspace(-4, 4, 100)
+x2 = np.linspace(-3, 7, 100)
+X1, X2 = np.meshgrid(x1, x2)
+x = np.vstack([X1.ravel(), X2.ravel()])
+
+# Compute the log posterior
+output = banana_model(x)
+# output = Gaussian_model(x)
+
+# Reshape the output
+log_posterior = output['log_posterior'].reshape(X1.shape)
+log_posterior = np.exp(log_posterior)  # Convert log posterior to posterior
+
+# Define the inputs
+# Create contour plot with fewer levels and no fill
+sns.kdeplot(x=None, y=None, fill=False, levels=7, cmap="viridis", linewidths=1.5)
+
+# Since kdeplot expects data to fit a distribution, we need to use plt.contour directly
+plt.contour(X1, X2, log_posterior, levels=7, cmap="viridis", linewidths=1.5)
+
+# Add pullback pdf
+pullback_pdf = sampler.kernel.map.pullback(x)
+plt.contour(X1, X2, pullback_pdf.reshape(X1.shape), levels=7, cmap="plasma", linestyles='dashed', linewidths=1.5)
+
+plt.colorbar(label='Log Posterior')
+plt.title('Banana Model Log Posterior', fontsize=14)
+plt.xlabel('x1', fontsize=12)
+plt.ylabel('x2', fontsize=12)
+plt.grid(True, linestyle='--', alpha=0.7)
+plt.savefig('examples/banana_transport/pullback_pdf.png')
