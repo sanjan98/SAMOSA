@@ -5,6 +5,8 @@ License: MIT
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import pickle
+import os
 
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import FuncFormatter
@@ -13,6 +15,30 @@ from scipy.stats import gaussian_kde
 from samosa.core.state import ChainState
 
 from typing import List, Any, Optional, Dict, Tuple
+
+def load_samples(output_dir: str, iteration: int = None) -> List[ChainState]:
+    """
+    Load MCMC samples from a pickle file.
+
+    Parameters:
+    ----------
+        None
+
+    Returns:
+    -------
+        samples (list): List of ChainState objects representing the MCMC samples.
+    """
+    if iteration is None:
+        with open(f'{output_dir}/samples.pkl', "rb") as f:
+            samples = pickle.load(f)
+            return samples
+    else:
+        file_path = f'{output_dir}/samples_{iteration}.pkl'
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"The file {file_path} does not exist.")
+        with open(f'{output_dir}/samples_{iteration}.pkl', "rb") as f:
+            samples = pickle.load(f)
+            return samples
 
 def get_position_from_states(samples: List[ChainState], burnin: Optional[float] = 0.25) -> np.ndarray:
     """
