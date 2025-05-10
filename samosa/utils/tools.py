@@ -181,13 +181,59 @@ def log_banana(x: np.ndarray, mu: Optional[np.ndarray] = None, sigma: Optional[n
 
     # Compute the transformation
     x0 = x[0, :]; x1 = x[1, :]
-    y0 = x0; y1 = x1 - y0**2
+    y0 = x0; y1 = x1 + y0**2
 
     y = np.vstack((y0, y1))
 
     # Compute the log PDF using the multivariate normal distribution
     logpdf = lognormpdf(y, mu, sigma)
 
+    return logpdf
+
+def log_quartic(x: np.ndarray, mu: Optional[np.ndarray] = None, sigma: Optional[np.ndarray] = None) -> np.ndarray:
+    """
+    Log pdf of the quartic-shaped distribution.
+
+    Parameters
+    ----------
+    x : (d, N) array
+        Points at which to evaluate the log PDF
+    mu : (d, 1) or (d,) array
+        Mean of the distribution (column vector or 1D array)
+    sigma : (d, d) array
+        Covariance matrix
+    
+    Returns
+    -------
+    logpdf : float or (N,) array
+        Log PDF value(s) - scalar if N=1, array otherwise
+    """
+
+    assert x.ndim == 2, "x must be a 2D array"
+
+    # Handle default parameters
+    if mu is None:
+        mu = np.zeros((x.shape[0], 1))
+    if sigma is None:
+        sigma = np.eye(x.shape[0])
+
+    mu = mu.flatten()  # Ensure mu is (d,)
+
+    # Reshape x if 1D
+    if x.ndim == 1:
+        x = x[:, np.newaxis]
+    d, N = x.shape
+
+    # Apply quartic transformation
+    x0 = x[0, :]
+    x1 = x[1, :]
+    y0 = x0
+    y1 = x1 + x0**2 + x0**4  # Quartic term defines curvature
+    y = np.vstack((y0, y1))
+
+    # Compute log-PDF
+    logpdf = lognormpdf(y, mu, sigma)
+    
     return logpdf
 
 def nearest_positive_definite(A):

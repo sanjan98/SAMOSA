@@ -25,7 +25,7 @@ class coupledMCMCsampler:
         n_iterations (int): Number of iterations to run the sampler.
     """
     
-    def __init__(self,  coarse_model: ModelProtocol, fine_model: ModelProtocol, kernel: KernelProtocol, proposal_coarse: ProposalProtocol, proposal_fine: ProposalProtocol, initial_position_coarse: np.ndarray, initial_position_fine: np.ndarray, n_iterations: int):
+    def __init__(self,  coarse_model: ModelProtocol, fine_model: ModelProtocol, kernel: KernelProtocol, proposal_coarse: ProposalProtocol, proposal_fine: ProposalProtocol, initial_position_coarse: np.ndarray, initial_position_fine: np.ndarray, n_iterations: int, print_iteration: int = 1000, save_iteration: int = 1000):
 
         dim = initial_position_coarse.shape[0]
         assert dim == initial_position_fine.shape[0], "The dimensions of the two chains must be the same."
@@ -56,6 +56,8 @@ class coupledMCMCsampler:
             })
         
         self.n_iterations = n_iterations
+        self.print_iteration = print_iteration
+        self.save_iterations = save_iteration
 
     def run(self, output_dir: str) -> None:
 
@@ -88,6 +90,9 @@ class coupledMCMCsampler:
         # Run the coupled MCMC sampling loop
         for i in range(1, self.n_iterations+1):
 
+            if i % self.print_iteration == 0:
+                print(f"Iteration {i}/{self.n_iterations}")
+
             # Propose a new state for both chains
             proposed_coarse_state, proposed_fine_state = self.kernel.propose(self.proposal_coarse, self.proposal_fine, current_coarse_state, current_fine_state) # Metadata is copied from current_state
 
@@ -114,12 +119,20 @@ class coupledMCMCsampler:
             # Adapt the proposal distribution
             self.kernel.adapt(self.proposal_coarse, current_coarse_state, self.proposal_fine, current_fine_state)
 
-            if hasattr(self.kernel, 'adapt_maps'):
-                self.kernel.adapt_maps(samples_coarse, samples_fine)
-
             # Store the current state
             samples_coarse.append(copy.deepcopy(current_coarse_state))
             samples_fine.append(copy.deepcopy(current_fine_state))
+            
+            if hasattr(self.kernel, 'adapt_maps'):
+                self.kernel.adapt_maps(samples_coarse, samples_fine)
+
+            # Save the samples at specified intervals
+            if i % self.save_iterations == 0:
+                with open(f"{output_dir}/samples_coarse{i}.pkl", "wb") as f:
+                    pickle.dump(samples_coarse, f)
+                with open(f"{output_dir}/samples_fine{i}.pkl", "wb") as f:
+                    pickle.dump(samples_fine, f)
+                print(f"Saved samples at iteration {i} to {output_dir}/samples_{i}.pkl")
 
         # Save the samples to a file
         with open(f"{output_dir}/samples_coarse.pkl", "wb") as f:
@@ -132,24 +145,3 @@ class coupledMCMCsampler:
         acceptance_rate_coarse = acceptance_count_coarse / self.n_iterations
         acceptance_rate_fine = acceptance_count_fine / self.n_iterations
         return acceptance_rate_coarse, acceptance_rate_fine
-
-    @staticmethod
-    def load_samples(output_dir: str) -> Tuple[List[ChainState], List[ChainState]]:
-        """
-        Load MCMC samples from a pickle file.
-
-        Parameters:
-        ----------
-            None
-
-        Returns:
-        -------
-            samples (list): List of ChainState objects representing the MCMC samples.
-        """
-        with open(f'{output_dir}/samples_coarse.pkl', "rb") as f:
-            samples_coarse = pickle.load(f)
-
-        with open(f'{output_dir}/samples_fine.pkl', "rb") as f:
-            samples_fine = pickle.load(f)
-
-        return samples_coarse, samples_fine

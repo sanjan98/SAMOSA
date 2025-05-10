@@ -95,11 +95,15 @@ class LowerTriangularMap(TransportMap):
         # Get current iteration
         iteration = samples[-1].metadata['iteration'] + 1
 
-        # Check if adaptation is needed
-        if iteration < self.adapt_start or iteration > self.adapt_end and not force_adapt:
-            return None
-        if (iteration - self.adapt_start) % self.adapt_interval != 0 and not force_adapt:
-            return None
+        # Only check conditions if not forcing adaptation
+        if not force_adapt:
+            # Check adaptation window
+            if iteration < self.adapt_start or iteration > self.adapt_end:
+                return None
+            
+            # Check adaptation interval
+            if (iteration - self.adapt_start) % self.adapt_interval != 0:
+                return None
         
         print(f"Adapting LowerTriangular map at iteration {iteration}")
 

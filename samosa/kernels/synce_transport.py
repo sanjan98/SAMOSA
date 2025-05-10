@@ -18,7 +18,7 @@ class TransportSYNCEKernel(KernelProtocol):
     Maintains two chains (high-fidelity and low-fidelity) and proposes coupled moves.
     """
 
-    def __init__(self, coarse_model: ModelProtocol, fine_model: ModelProtocol, coarse_map: Any, fine_map: Any, coupletype: str = 'deep'):
+    def __init__(self, coarse_model: ModelProtocol, fine_model: ModelProtocol, coarse_map: Any, fine_map: Any, coupletype: str = 'direct'):
         """
         Initialize the SYNCE Coupled kernel.
         
@@ -54,21 +54,20 @@ class TransportSYNCEKernel(KernelProtocol):
         coarse_theta = current_coarse_state.position
         fine_theta = current_fine_state.position
 
-        coarse_r, logdet_current_coarse = self.coarse_map.forward(coarse_theta.position)
+        coarse_r, _ = self.coarse_map.forward(coarse_theta)
 
         # Bring the corase sample to the reference space
         # Depending on type of couplingtype, bring it back to the right space
         if self.coupletype == 'deep':
             
             # Bring the fine sample to the coarse space
-            ftoc_theta, logdet_current_ftoc = self.fine_map.forward(fine_theta.position)
-            fine_r, logdet_current_ctor = self.coarse_map.forward(ftoc_theta)
-            logdet_current_fine = logdet_current_ftoc + logdet_current_ctor
+            ftoc_theta, _ = self.fine_map.forward(fine_theta)
+            fine_r, _ = self.coarse_map.forward(ftoc_theta)
 
         elif self.coupletype == 'direct':
 
             # Bring the fine sample to the reference space
-            fine_r, logdet_current_fine = self.fine_map.forward(fine_theta.position)
+            fine_r, _ = self.fine_map.forward(fine_theta)
 
         # Propose the common step from the standard Gaussian
         eta = sample_multivariate_gaussian(np.zeros((dim, 1)), np.eye(dim))
@@ -79,16 +78,15 @@ class TransportSYNCEKernel(KernelProtocol):
         fine_rprime = fine_r + np.linalg.cholesky(proposal_fine.cov) @ eta if hasattr(proposal_fine, 'cov') else fine_r + np.linalg.cholesky(proposal_fine.proposal.cov) @ eta
 
         # Bring the coarse sample back to the original space
-        coarse_thetaprime, logdet_proposed_coarse = self.coarse_map.inverse(coarse_rprime)
+        coarse_thetaprime, _ = self.coarse_map.inverse(coarse_rprime)
 
         # Bring the fine sample back to the original space
         if self.coupletype == 'deep':
-            rtoc_tetaprime, logdet_proposed_rtoc = self.coarse_map.inverse(fine_rprime)
-            fine_thetaprime, logdet_proposed_ctof = self.fine_map.inverse(rtoc_tetaprime)
-            logdet_proposed_fine = logdet_proposed_rtoc + logdet_proposed_ctof
+            rtoc_tetaprime, _ = self.coarse_map.inverse(fine_rprime)
+            fine_thetaprime, _ = self.fine_map.inverse(rtoc_tetaprime)
 
         elif self.coupletype == 'direct':
-            fine_thetaprime, logdet_proposed_fine = self.fine_map.inverse(fine_rprime)
+            fine_thetaprime, _ = self.fine_map.inverse(fine_rprime)
 
         # Evaluate the low-fidelity model
         coarse_model_result = self.coarse_model(coarse_thetaprime)
@@ -99,16 +97,6 @@ class TransportSYNCEKernel(KernelProtocol):
         proposed_coarse_state = ChainState(position=coarse_thetaprime, **coarse_model_result, metadata=current_coarse_state.metadata.copy())
 
         proposed_fine_state = ChainState(position=fine_thetaprime, **fine_model_result, metadata=current_fine_state.metadata.copy())
-
-        # This might be wrong, please check
-        # Add the log determinants to the correct logposteriors
-        proposed_coarse_state.log_posterior += logdet_proposed_coarse
-        proposed_fine_state.log_posterior += logdet_proposed_fine
-
-        # Update the current logposteriors as well
-        # This is needed for the acceptance ratio
-        current_coarse_state.log_posterior += -logdet_current_coarse         
-        current_fine_state.log_posterior += -logdet_current_fine
 
         return proposed_coarse_state, proposed_fine_state
     
@@ -128,10 +116,37 @@ class TransportSYNCEKernel(KernelProtocol):
             Tuple of acceptance ratios for the low-fidelity and high-fidelity chains
         """
         
-        ar_coarse = MetropolisHastingsKernel(self.coarse_model).acceptance_ratio(proposal_coarse, current_coarse, proposed_coarse)
+        coarse_r, logdet_current_coarse = self.coarse_map.forward(current_coarse.position)
+        coarse_rprime, logdet_proposed_coarse = self.coarse_map.forward(proposed_coarse.position)
 
-        ar_fine = MetropolisHastingsKernel(self.fine_model).acceptance_ratio(proposal_fine, current_fine, proposed_fine)
+        current_reference_coarse = ChainState(position=coarse_r, log_posterior=None)
+        proposed_reference_coarse = ChainState(position=coarse_rprime, log_posterior=None)
 
+        logq_forward_coarse, logq_reverse_coarse = proposal_coarse.proposal_logpdf(current_reference_coarse, proposed_reference_coarse)
+        
+        # Calculate the acceptance ratio
+        check_coarse = (proposed_coarse.log_posterior + logq_reverse_coarse - logdet_proposed_coarse) - (current_coarse.log_posterior + logq_forward_coarse - logdet_current_coarse)
+        if check_coarse > 0:
+            ar_coarse = 1.0
+        else:
+            ar_coarse = np.exp(check_coarse)
+
+        # Implementing only direct mapping for now
+        fine_r, logdet_current_fine = self.fine_map.forward(current_fine.position)
+        fine_rprime, logdet_proposed_fine = self.fine_map.forward(proposed_fine.position)
+        current_reference_fine = ChainState(position=fine_r, log_posterior=None)
+        proposed_reference_fine = ChainState(position=fine_rprime, log_posterior=None)
+
+        logq_forward_fine, logq_reverse_fine = proposal_fine.proposal_logpdf(current_reference_fine, proposed_reference_fine)
+
+        # Calculate the acceptance ratio
+        check_fine = (proposed_fine.log_posterior + logq_reverse_fine - logdet_proposed_fine) - (current_fine.log_posterior + logq_forward_fine - logdet_current_fine)
+        if check_fine > 0:
+            ar_fine = 1.0
+        else:
+            ar_fine = np.exp(check_fine)
+
+        # Calculate the acceptance ratio
         return ar_coarse, ar_fine
     
     def adapt(self, proposal_coarse: ProposalProtocol, proposed_coarse: ChainState, proposal_fine: ProposalProtocol, proposed_fine: ChainState) -> None:
