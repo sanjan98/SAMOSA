@@ -134,7 +134,7 @@ def laplace_approx(x0: np.ndarray, logpost: Callable, optmethod: str):
     print('----------------------------------------------------------------------------')
     print('----------------------------------------------------------------------------')
     # Gradient method which also approximates the inverse of the hessian
-    res = scipy.optimize.minimize(neg_post, res.x*0.95, method=optmethod, tol=1e-6, options={'maxiter': 5000, 'disp': True})
+    res = scipy.optimize.minimize(neg_post, res.x*0.95, method=optmethod, tol=1e-6, options={'maxiter': 500, 'disp': True})
     map_point = res.x
     # Make map point a column vector
     map_point = map_point[:, np.newaxis] if map_point.ndim == 1 else map_point

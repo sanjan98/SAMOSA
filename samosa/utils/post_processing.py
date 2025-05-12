@@ -62,15 +62,15 @@ def load_coupled_samples(output_dir: str, iteration: int = None) -> List[ChainSt
             samples_fine = pickle.load(f)
             return samples_coarse, samples_fine
     else:
-        file_path_coarse = f'{output_dir}/samples_coarse_{iteration}.pkl'
-        file_path_fine = f'{output_dir}/samples_fine_{iteration}.pkl'
+        file_path_coarse = f'{output_dir}/samples_coarse{iteration}.pkl'
+        file_path_fine = f'{output_dir}/samples_fine{iteration}.pkl'
         if not os.path.exists(file_path_coarse):
             raise FileNotFoundError(f"The file {file_path_coarse} does not exist.")
         if not os.path.exists(file_path_fine):
             raise FileNotFoundError(f"The file {file_path_fine} does not exist.")
-        with open(f'{output_dir}/samples_coarse_{iteration}.pkl', "rb") as f:
+        with open(f'{file_path_coarse}', "rb") as f:
             samples_coarse = pickle.load(f)
-        with open(f'{output_dir}/samples_fine_{iteration}.pkl', "rb") as f:
+        with open(f'{file_path_fine}', "rb") as f:
             samples_fine = pickle.load(f)
             return samples_coarse, samples_fine
 
