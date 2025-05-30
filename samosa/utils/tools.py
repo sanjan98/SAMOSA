@@ -95,6 +95,34 @@ def sample_multivariate_gaussian(mu: np.ndarray, sigma: np.ndarray, N: int = 1) 
     
     # Transpose to get (d, N) output format
     return samples.T
+
+def batched_variance(data: np.ndarray, batch_size: int) -> np.ndarray:
+    """
+    Calculates the variance of a dataset using a batched approach for multidimensional data.
+
+    Parameters
+    ----------
+    data : (dim, nsamples) array
+        Input data where dim is the number of dimensions and nsamples is the number of samples.
+    batch_size : int
+        Size of each batch to process.
+
+    Returns
+    -------
+    variance : np.ndarray
+        Array of shape (dim,) containing the variance for each dimension.
+    """
+    dim, nsamples = data.shape
+    n_batches = int(np.ceil(nsamples / batch_size))
+    batch_variances = np.zeros((dim, n_batches))
+
+    for i in range(n_batches):
+        start = i * batch_size
+        end = min((i + 1) * batch_size, nsamples)
+        batch = data[:, start:end]
+        batch_variances[:, i] = np.var(batch, axis=1, ddof=1)  # Sample variance for each dimension
+
+    return np.mean(batch_variances, axis=1)
     
 def laplace_approx(x0: np.ndarray, logpost: Callable, optmethod: str):
     """Perform the laplace approximation, returning the MAP point and an approximation of the covariance matrix.
@@ -134,7 +162,7 @@ def laplace_approx(x0: np.ndarray, logpost: Callable, optmethod: str):
     print('----------------------------------------------------------------------------')
     print('----------------------------------------------------------------------------')
     # Gradient method which also approximates the inverse of the hessian
-    res = scipy.optimize.minimize(neg_post, res.x*0.95, method=optmethod, tol=1e-6, options={'maxiter': 500, 'disp': True})
+    res = scipy.optimize.minimize(neg_post, res.x*0.95, method=optmethod, tol=1e-6, options={'maxiter': 5000, 'disp': True})
     map_point = res.x
     # Make map point a column vector
     map_point = map_point[:, np.newaxis] if map_point.ndim == 1 else map_point
