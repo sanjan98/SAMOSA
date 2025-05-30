@@ -26,22 +26,31 @@ class MCMCsampler:
         n_iterations (int): Number of iterations to run the sampler.
         print_iteration (int): Number of iterations between prints.
         save_iteration (int): Number of iterations between saves.
+        restart (list): List of states to restart the chain from.
     """
     
-    def __init__(self,  model: ModelProtocol, kernel: KernelProtocol, proposal: ProposalProtocol, initial_position: np.ndarray, n_iterations: int, print_iteration: int = 1000, save_iteraton: int = 1000):
+    def __init__(self,  model: ModelProtocol, kernel: KernelProtocol, proposal: ProposalProtocol, initial_position: np.ndarray, n_iterations: int, print_iteration: int = 1000, save_iteraton: int = 1000, restart: List[ChainState] = None):
 
         dim = initial_position.shape[0]
         self.dim = dim
         self.kernel = kernel
         self.proposal = proposal
         self.model = model
-        self.initial_state = ChainState(position=initial_position, **model(initial_position), metadata={
-            'covariance': proposal.sigma if hasattr(proposal, 'sigma') else proposal.proposal.sigma,
-            'mean': initial_position,
-            'lambda': 2.4**2 / dim,
-            'acceptance_probability': 0.0,
-            'iteration': 1
-            })
+        self.restart = restart
+
+        if self.restart is not None:
+            self.initial_state = self.restart[-1]
+            self.start_iteration = self.restart[-1].metadata['iteration'] + 1
+        else:
+            self.initial_state = ChainState(position=initial_position, **model(initial_position), metadata={
+                'covariance': proposal.sigma if hasattr(proposal, 'sigma') else proposal.proposal.sigma,
+                'mean': initial_position,
+                'lambda': 2.4**2 / dim,
+                'acceptance_probability': 0.0,
+                'iteration': 1
+                })
+            self.start_iteration = 1
+
         self.n_iterations = n_iterations
         self.print_iteration = print_iteration
         self.save_iterations = save_iteraton
@@ -66,11 +75,14 @@ class MCMCsampler:
         
         # Initialize the chain state
         current_state = self.initial_state
-        samples = []
+        if self.restart is not None:
+            samples = copy.deepcopy(self.restart)
+        else:
+            samples = []
         acceptance_count = 0
 
         # Run the MCMC sampling loop
-        for i in range(1, self.n_iterations+1):
+        for i in range(self.start_iteration, self.n_iterations+1):
 
             if i % self.print_iteration == 0:
                 print(f"Iteration {i}/{self.n_iterations}")
@@ -127,5 +139,8 @@ class MCMCsampler:
             pickle.dump(samples, f)
         
         # Save the acceptance rate
-        acceptance_rate = acceptance_count / self.n_iterations
+        if self.start_iteration > 1:
+            acceptance_rate = acceptance_count / (self.n_iterations - self.start_iteration + 1)
+        else:
+            acceptance_rate = acceptance_count / self.n_iterations
         return acceptance_rate

@@ -25,7 +25,7 @@ class coupledMCMCsampler:
         n_iterations (int): Number of iterations to run the sampler.
     """
     
-    def __init__(self,  coarse_model: ModelProtocol, fine_model: ModelProtocol, kernel: KernelProtocol, proposal_coarse: ProposalProtocol, proposal_fine: ProposalProtocol, initial_position_coarse: np.ndarray, initial_position_fine: np.ndarray, n_iterations: int, print_iteration: int = 1000, save_iteration: int = 1000):
+    def __init__(self,  coarse_model: ModelProtocol, fine_model: ModelProtocol, kernel: KernelProtocol, proposal_coarse: ProposalProtocol, proposal_fine: ProposalProtocol, initial_position_coarse: np.ndarray, initial_position_fine: np.ndarray, n_iterations: int, print_iteration: int = 1000, save_iteration: int = 1000, restart_coarse: List[ChainState] = None, restart_fine: List[ChainState] = None):
 
         dim = initial_position_coarse.shape[0]
         assert dim == initial_position_fine.shape[0], "The dimensions of the two chains must be the same."
@@ -39,22 +39,36 @@ class coupledMCMCsampler:
         self.coarse_model = coarse_model
         self.fine_model = fine_model
 
-        self.initial_state_coarse = ChainState(position=initial_position_coarse, **coarse_model(initial_position_coarse), metadata={
-            'covariance': proposal_coarse.sigma if hasattr(proposal_coarse, 'sigma') else proposal_coarse.proposal.sigma,
-            'mean': initial_position_coarse,
-            'lambda': 2.4**2 / dim,
-            'acceptance_probability': 0.0,
-            'iteration': 1
-            })
-        
-        self.initial_state_fine = ChainState(position=initial_position_fine, **fine_model(initial_position_fine), metadata={
-            'covariance': proposal_fine.sigma if hasattr(proposal_fine, 'sigma') else proposal_fine.proposal.sigma,
-            'mean': initial_position_fine,
-            'lambda': 2.4**2 / dim,
-            'acceptance_probability': 0.0,
-            'iteration': 1
-            })
-        
+        self.restart_coarse = restart_coarse
+        self.restart_fine = restart_fine
+
+        if self.restart_coarse is not None and self.restart_fine is not None:
+            assert len(self.restart_coarse) == len(self.restart_fine), "The lengths of restart_coarse and restart_fine must be the same."
+
+        if self.restart_coarse is not None:
+            self.initial_state_coarse = self.restart_coarse[-1]
+            self.start_iteration = self.restart_coarse[-1].metadata['iteration'] + 1
+        else:
+            self.initial_state_coarse = ChainState(position=initial_position_coarse, **coarse_model(initial_position_coarse), metadata={
+                'covariance': proposal_coarse.sigma if hasattr(proposal_coarse, 'sigma') else proposal_coarse.proposal.sigma,
+                'mean': initial_position_coarse,
+                'lambda': 2.4**2 / dim,
+                'acceptance_probability': 0.0,
+                'iteration': 1
+                })
+            self.start_iteration = 1
+
+        if self.restart_fine is not None:
+            self.initial_state_fine = self.restart_fine[-1]
+        else:    
+            self.initial_state_fine = ChainState(position=initial_position_fine, **fine_model(initial_position_fine), metadata={
+                'covariance': proposal_fine.sigma if hasattr(proposal_fine, 'sigma') else proposal_fine.proposal.sigma,
+                'mean': initial_position_fine,
+                'lambda': 2.4**2 / dim,
+                'acceptance_probability': 0.0,
+                'iteration': 1
+                })
+            
         self.n_iterations = n_iterations
         self.print_iteration = print_iteration
         self.save_iterations = save_iteration
@@ -81,14 +95,18 @@ class coupledMCMCsampler:
         current_coarse_state = self.initial_state_coarse
         current_fine_state = self.initial_state_fine
 
-        samples_coarse = []
-        samples_fine = []
+        if self.restart_coarse is not None and self.restart_fine is not None:
+            samples_coarse = copy.deepcopy(self.restart_coarse)
+            samples_fine = copy.deepcopy(self.restart_fine)
+        else:
+            samples_coarse = []
+            samples_fine = []
 
         acceptance_count_coarse = 0
         acceptance_count_fine = 0
 
         # Run the coupled MCMC sampling loop
-        for i in range(1, self.n_iterations+1):
+        for i in range(self.start_iteration, self.n_iterations+1):
 
             if i % self.print_iteration == 0:
                 print(f"Iteration {i}/{self.n_iterations}")
@@ -142,6 +160,10 @@ class coupledMCMCsampler:
             pickle.dump(samples_fine, f)
         
         # Save the acceptance rate
-        acceptance_rate_coarse = acceptance_count_coarse / self.n_iterations
-        acceptance_rate_fine = acceptance_count_fine / self.n_iterations
+        if self.start_iteration > 1:
+            acceptance_rate_coarse = acceptance_count_coarse / (self.n_iterations - self.start_iteration + 1)
+            acceptance_rate_fine = acceptance_count_fine / (self.n_iterations - self.start_iteration + 1)
+        else:
+            acceptance_rate_coarse = acceptance_count_coarse / self.n_iterations
+            acceptance_rate_fine = acceptance_count_fine / self.n_iterations
         return acceptance_rate_coarse, acceptance_rate_fine
