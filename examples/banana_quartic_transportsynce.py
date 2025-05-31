@@ -45,7 +45,7 @@ def quartic_model(x: np.ndarray) -> Dict[str, Any]:
     """
     output = {}
     # Just use the log_banana function to compute the log posterior
-    log_posterior = log_banana(x, mu = np.zeros((2, 1)), sigma = np.array([[2, 0.5],[0.5, 1]])) 
+    log_posterior = log_banana(x, mu = np.array([[1], [1]]), sigma = np.array([[2, 0.5], [0.5, 1]])) 
 
     output['log_posterior'] = log_posterior
 

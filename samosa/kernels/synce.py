@@ -1,5 +1,5 @@
 """
-Class file for the SYNCE Coupled kernel for coupled chain
+Class file for the (RE)SYNCE Coupled kernel for coupled chain
 """
 
 # Imports
@@ -10,24 +10,32 @@ from samosa.core.proposal import ProposalProtocol
 from samosa.core.kernel import KernelProtocol
 from samosa.utils.tools import sample_multivariate_gaussian
 from samosa.kernels.metropolis import MetropolisHastingsKernel
+from samosa.proposals.gaussianproposal import IndependentProposal
+from samosa.proposals.maximalproposal import MaximalCoupling
 from typing import Tuple
 
 class SYNCEKernel(KernelProtocol):
     """
     Coupled kernel for Multi-Level MCMC sampling.
     Maintains two chains (high-fidelity and low-fidelity) and proposes coupled moves.
+    Also has the option of resyncjronization (RE)SYNCE. The resynchronization kernel is assumed to be the Independent Metropolis-Hastings kernel.
+    The final RESYNCE kernel will be K_RESYNCE = (1-w)*K_SYNCE + w*K_RE, where K_SYNCE is the SYNCE kernel and K_RE is the resynchronization kernel.
+    w is the weight for the resynchronization kernel, which can be set to 0 for the SYNCE kernel.
     """
 
-    def __init__(self, coarse_model: ModelProtocol, fine_model: ModelProtocol):
+    def __init__(self, coarse_model: ModelProtocol, fine_model: ModelProtocol, w: float = 0.0, resync_type: str = 'maximal'):
         """
         Initialize the SYNCE Coupled kernel.
         
         Args:
             coarse_model: Low-fidelity model
             fine_model: High-fidelity model
+            w: Weight for the resynchronization kernel (default is 0.0, which means no resynchronization)
         """
         self.coarse_model = coarse_model
         self.fine_model = fine_model
+        self.w = w
+        self.resync_type = resync_type
         
     def propose(self, proposal_coarse: ProposalProtocol, proposal_fine: ProposalProtocol, current_coarse_state: ChainState, current_fine_state: ChainState) -> Tuple[ChainState, ChainState]:
         """
@@ -45,14 +53,42 @@ class SYNCEKernel(KernelProtocol):
 
         dim = current_coarse_state.position.shape[0]
         assert dim == current_fine_state.position.shape[0], "The dimensions of the two chains must be the same."
-        
-        # Propose the common step from the standard Gaussian
-        eta = sample_multivariate_gaussian(np.zeros((dim, 1)), np.eye(dim))
 
-        # Propose a move for the low-fidelity chain
-        proposed_coarse_position = current_coarse_state.position + np.linalg.cholesky(proposal_coarse.cov) @ eta if hasattr(proposal_coarse, 'cov') else current_coarse_state.position + np.linalg.cholesky(proposal_coarse.proposal.cov) @ eta
-        # Propose a move for the high-fidelity chain
-        proposed_fine_position = current_fine_state.position + np.linalg.cholesky(proposal_fine.cov) @ eta if hasattr(proposal_fine, 'cov') else current_fine_state.position + np.linalg.cholesky(proposal_fine.proposal.cov) @ eta
+        # Sample a uniform random number to decide whether to resynchronize or not
+        u = np.random.rand()
+
+        if u < self.w:
+
+            # Resynchronization step
+            # Depending on the type of resynchronization kernel, propose a common step
+            if self.resync_type == 'maximal':
+                maximal_proposal = MaximalCoupling(proposal_coarse, proposal_fine)
+                proposed_fine_position, proposed_coarse_position = maximal_proposal.sample(current_coarse_state, current_fine_state)
+
+            elif self.resync_type == 'independent':
+
+                common_mean = (current_coarse_state.metadata['mean'] + current_fine_state.metadata['mean']) / 2
+                common_cov = (current_coarse_state.metadata['covariance'] + current_fine_state.metadata['covariance']) / 2
+
+                proposal = IndependentProposal(mu = common_mean, sigma = common_cov)
+
+                eta = proposal.sample(current_fine_state)
+
+                proposed_fine_position = eta.position
+                proposed_coarse_position = eta.position
+
+            else:
+                raise ValueError(f"Unknown resynchronization type: {self.resync_type}. Supported types are 'maximal' and 'independent'.")
+            
+        else:
+            # SYNCE step
+            # Propose the common step from the standard Gaussian
+            eta = sample_multivariate_gaussian(np.zeros((dim, 1)), np.eye(dim))
+
+            # Propose a move for the low-fidelity chain
+            proposed_coarse_position = current_coarse_state.position + np.linalg.cholesky(proposal_coarse.cov) @ eta if hasattr(proposal_coarse, 'cov') else current_coarse_state.position + np.linalg.cholesky(proposal_coarse.proposal.cov) @ eta
+            # Propose a move for the high-fidelity chain
+            proposed_fine_position = current_fine_state.position + np.linalg.cholesky(proposal_fine.cov) @ eta if hasattr(proposal_fine, 'cov') else current_fine_state.position + np.linalg.cholesky(proposal_fine.proposal.cov) @ eta
 
         # Evaluate the low-fidelity model
         coarse_model_result = self.coarse_model(proposed_coarse_position)

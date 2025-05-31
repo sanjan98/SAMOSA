@@ -1,12 +1,9 @@
 # Some imports
 import numpy as np
-import sys
-import os
 from samosa.utils.tools import log_banana, log_quartic
 from samosa.utils.post_processing import scatter_matrix
 from typing import Any, Dict
 import matplotlib.pyplot as plt
-import pickle
 
 # Lets define the banana model
 # The inputs will be the sample (x: np.ndarray of shape (n_dim, n_samples))
@@ -45,7 +42,7 @@ def quartic_model(x: np.ndarray) -> Dict[str, Any]:
     """
     output = {}
     # Just use the log_banana function to compute the log posterior
-    log_posterior = log_banana(x, mu = np.zeros((2, 1)), sigma = np.array([[2, 0.5],[0.5, 1]])) 
+    log_posterior = log_banana(x, mu = np.array([[1.0], [1.0]]), sigma = np.array([[2, 0.5],[0.5, 1]])) 
 
     output['log_posterior'] = log_posterior
 
@@ -135,13 +132,13 @@ adapter = GlobalAdapter(ar = 0.44, adapt_start=1000, adapt_end=10000)
 # adapter = HaarioAdapter(scale=2.38**2/2, adapt_start=1000, adapt_end=10000)
 adaptive_proposal = AdaptiveProposal(proposal, adapter)
 
-kernel = SYNCEKernel(model_coarse, model_fine)
+kernel = SYNCEKernel(model_coarse, model_fine, w=0.2, resync_type='independent')
 
 # Load samples from the output directory for restart
-restart_coarse, restart_fine = load_coupled_samples('examples/banana_quartic_synce', iteration=20000)
+# restart_coarse, restart_fine = load_coupled_samples('examples/banana_quartic_synce', iteration=20000)
 
 # Define the sampler
-sampler = coupledMCMCsampler(model_coarse, model_fine, kernel, adaptive_proposal, adaptive_proposal, initial_position_coarse=np.zeros((2, 1)), initial_position_fine=np.zeros((2, 1)), n_iterations=50000, print_iteration=1000, save_iteration=10000, restart_coarse=restart_coarse, restart_fine=restart_fine) 
+sampler = coupledMCMCsampler(model_coarse, model_fine, kernel, adaptive_proposal, adaptive_proposal, initial_position_coarse=np.zeros((2, 1)), initial_position_fine=np.zeros((2, 1)), n_iterations=50000, print_iteration=1000, save_iteration=10000)#, restart_coarse=restart_coarse, restart_fine=restart_fine) 
 ar1, ar2 = sampler.run('examples/banana_quartic_synce')
 
 print("Acceptance rate:", ar1)
