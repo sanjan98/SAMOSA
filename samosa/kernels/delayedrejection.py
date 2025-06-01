@@ -104,6 +104,11 @@ class DelayedRejectionKernel(KernelProtocol):
         Returns:
             The acceptance ratio for the second stage
         """
+
+        # If the second stage posterior is -inf, reject immediately
+        if second_stage.log_posterior == -np.inf:
+            return 0.0
+
         # Calculate standard proposal densities
         logq_forward_1, logq_reverse_1 = proposal.proposal_logpdf(current, first_stage)
         
