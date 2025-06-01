@@ -51,6 +51,13 @@ class DelayedRejectionKernel(KernelProtocol):
                 proposal.cov = original_cov * self.cov_scale
                 proposed_state2 = self._proposestate(proposal, current)
                 proposal.cov = original_cov
+
+            elif hasattr(proposal.proposal, 'cov'):
+                original_cov = proposal.proposal.cov.copy()
+                proposal.proposal.cov = original_cov * self.cov_scale
+                proposed_state2 = self._proposestate(proposal, current)
+                proposal.proposal.cov = original_cov
+
             else:
                 proposed_state2 = self._proposestate(proposal, current)
 
@@ -113,6 +120,20 @@ class DelayedRejectionKernel(KernelProtocol):
             
             # Restore the original covariance
             proposal.cov = original_cov
+
+        elif hasattr(proposal.proposal, 'cov'):
+            original_cov = proposal.proposal.cov.copy()
+            proposal.proposal.cov = original_cov * self.cov_scale
+            
+            # Calculate second-order proposal densities
+            logq_forward_2, logq_reverse_2 = proposal.proposal_logpdf(current, second_stage)
+            
+            # Calculate hypothetical proposal densities from second_stage to first_stage
+            logq_y2_to_y1, logq_y1_to_y2 = proposal.proposal_logpdf(second_stage, first_stage)
+            
+            # Restore the original covariance
+            proposal.proposal.cov = original_cov
+
         else:
             # If proposal doesn't have adjustable covariance
             logq_forward_2, logq_reverse_2 = proposal.proposal_logpdf(current, second_stage)
