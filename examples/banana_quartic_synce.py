@@ -128,11 +128,11 @@ model_coarse = banana_model
 model_fine = quartic_model
 
 proposal = GaussianRandomWalk(mu=np.zeros((2,1)), sigma=np.eye(2))
-adapter = GlobalAdapter(ar = 0.44, adapt_start=1000, adapt_end=10000)
+adapter = GlobalAdapter(ar = 0.7, adapt_start=1000, adapt_end=10000)
 # adapter = HaarioAdapter(scale=2.38**2/2, adapt_start=1000, adapt_end=10000)
 adaptive_proposal = AdaptiveProposal(proposal, adapter)
 
-kernel = SYNCEKernel(model_coarse, model_fine, w=0.2, resync_type='independent')
+kernel = SYNCEKernel(model_coarse, model_fine, w=0.5, resync_type='lot')
 
 # Load samples from the output directory for restart
 # restart_coarse, restart_fine = load_coupled_samples('examples/banana_quartic_synce', iteration=20000)
@@ -167,24 +167,24 @@ for i in range(positions_fine.shape[0]):
     correlations.append(correlation)
     print(f"Correlation in dimension {i + 1}: {correlation}")
 
-# Plot the scatter plot of the samples
-from samosa.utils.post_processing import scatter_matrix, plot_trace, plot_lag
-fig, _, _ = scatter_matrix([positions_coarse, positions_fine])
-plt.savefig('examples/banana_quartic_synce/scatter.png')
-plt.close(fig)
+# # Plot the scatter plot of the samples
+# from samosa.utils.post_processing import scatter_matrix, plot_trace, plot_lag
+# fig, _, _ = scatter_matrix([positions_coarse, positions_fine])
+# plt.savefig('examples/banana_quartic_synce/scatter.png')
+# plt.close(fig)
 
-# Plot the trace of the samples
-fig, _ = plot_trace(positions_coarse)
-plt.savefig('examples/banana_quartic_synce/trace_coarse.png')
-plt.close(fig)
-fig, _ = plot_trace(positions_fine)
-plt.savefig('examples/banana_quartic_synce/trace_fine.png')
-plt.close(fig)
+# # Plot the trace of the samples
+# fig, _ = plot_trace(positions_coarse)
+# plt.savefig('examples/banana_quartic_synce/trace_coarse.png')
+# plt.close(fig)
+# fig, _ = plot_trace(positions_fine)
+# plt.savefig('examples/banana_quartic_synce/trace_fine.png')
+# plt.close(fig)
 
-# Plot the lag of the samples
-fig, _ = plot_lag(positions_coarse)
-plt.savefig('examples/banana_quartic_synce/lag_coarse.png')
-plt.close(fig)
-fig, _ = plot_lag(positions_fine)
-plt.savefig('examples/banana_quartic_synce/lag_fine.png')
-plt.close(fig)
+# # Plot the lag of the samples
+# fig, _ = plot_lag(positions_coarse)
+# plt.savefig('examples/banana_quartic_synce/lag_coarse.png')
+# plt.close(fig)
+# fig, _ = plot_lag(positions_fine)
+# plt.savefig('examples/banana_quartic_synce/lag_fine.png')
+# plt.close(fig)

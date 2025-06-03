@@ -70,7 +70,7 @@ def quartic_model(x: np.ndarray) -> Dict[str, Any]:
 
 from samosa.samplers.coupled_chain import coupledMCMCsampler
 from samosa.kernels.synce_transport import TransportSYNCEKernel
-from samosa.proposals.gaussianproposal import GaussianRandomWalk
+from samosa.proposals.gaussianproposal import GaussianRandomWalk, IndependentProposal
 from samosa.proposals.adapters import HaarioAdapter, GlobalAdapter
 from samosa.core.proposal import AdaptiveProposal
 from samosa.maps.triangular import LowerTriangularMap
@@ -81,9 +81,10 @@ from samosa.utils.post_processing import load_coupled_samples, get_position_from
 model_coarse = banana_model
 model_fine = quartic_model
 
-proposal = GaussianRandomWalk(mu=np.zeros((2,1)), sigma=np.eye(2))
-adapter = GlobalAdapter(ar = 0.44, adapt_start=1000, adapt_end=10000)
-adaptive_proposal = AdaptiveProposal(proposal, adapter)
+# proposal = GaussianRandomWalk(mu=np.zeros((2,1)), sigma=np.eye(2))
+proposal = IndependentProposal(mu=np.zeros((2,1)), sigma=2.38**2 / 2 * np.eye(2))
+# adapter = GlobalAdapter(ar = 0.44, adapt_start=1000, adapt_end=10000)
+# adaptive_proposal = AdaptiveProposal(proposal, adapter)
 
 # Define map based on some samples
 samples = load_coupled_samples('examples/banana_quartic_synce')
@@ -125,7 +126,7 @@ plt.close(fig)
 kernel = TransportSYNCEKernel(model_coarse, model_fine, map_coarse, map_fine)
 
 # Define the sampler
-sampler = coupledMCMCsampler(model_coarse, model_fine, kernel, adaptive_proposal, adaptive_proposal, initial_position_coarse=np.zeros((2, 1)), initial_position_fine=np.zeros((2, 1)), n_iterations=50000, print_iteration=1000, save_iteration=60000) 
+sampler = coupledMCMCsampler(model_coarse, model_fine, kernel, proposal, proposal, initial_position_coarse=np.zeros((2, 1)), initial_position_fine=np.zeros((2, 1)), n_iterations=50000, print_iteration=1000, save_iteration=60000) 
 ar1, ar2 = sampler.run('examples/banana_quartic_transportsynce')
 
 print("Acceptance rate:", ar1)
