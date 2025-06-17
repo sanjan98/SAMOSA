@@ -169,7 +169,7 @@ def laplace_approx(x0: np.ndarray, logpost: Callable, optmethod: str):
     cov_approx = res.hess_inv
     return map_point, cov_approx
 
-def log_banana(x: np.ndarray, mu: Optional[np.ndarray] = None, sigma: Optional[np.ndarray] = None) -> np.ndarray:
+def log_banana(x: np.ndarray, mu: Optional[np.ndarray] = None, sigma: Optional[np.ndarray] = None, shift: Optional[float] = 0.0) -> np.ndarray:
     """
     Log pdf of the banana distribution.
 
@@ -208,7 +208,7 @@ def log_banana(x: np.ndarray, mu: Optional[np.ndarray] = None, sigma: Optional[n
     d, N = x.shape
 
     # Compute the transformation
-    x0 = x[0, :]; x1 = x[1, :]
+    x0 = x[0, :] - shift; x1 = x[1, :]
     y0 = x0; y1 = x1 + y0**2
 
     y = np.vstack((y0, y1))
@@ -218,7 +218,7 @@ def log_banana(x: np.ndarray, mu: Optional[np.ndarray] = None, sigma: Optional[n
 
     return logpdf
 
-def log_quartic(x: np.ndarray, mu: Optional[np.ndarray] = None, sigma: Optional[np.ndarray] = None) -> np.ndarray:
+def log_quartic(x: np.ndarray, mu: Optional[np.ndarray] = None, sigma: Optional[np.ndarray] = None, shift: Optional[float] = 0.0) -> np.ndarray:
     """
     Log pdf of the quartic-shaped distribution.
 
@@ -253,10 +253,8 @@ def log_quartic(x: np.ndarray, mu: Optional[np.ndarray] = None, sigma: Optional[
     d, N = x.shape
 
     # Apply quartic transformation
-    x0 = x[0, :]
-    x1 = x[1, :]
-    y0 = x0
-    y1 = x1 + x0**2 + x0**4  # Quartic term defines curvature
+    x0 = x[0, :] - shift; x1 = x[1, :]
+    y0 = x0; y1 = x1 + x0**2 + x0**4  # Quartic term defines curvature
     y = np.vstack((y0, y1))
 
     # Compute log-PDF

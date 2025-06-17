@@ -29,6 +29,9 @@ class ChainState:
     # Necessary attributes
     position: np.ndarray
 
+    # Optional reference attribute (for transport maps)
+    reference_position: Optional[np.ndarray] = None
+
     # Optional to handle having direct knowledge of posterior (eg: for testing purposes)
     log_posterior: Optional[float] = None  
     log_prior: Optional[float] = None         

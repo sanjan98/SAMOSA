@@ -31,6 +31,7 @@ class SYNCEKernel(KernelProtocol):
             coarse_model: Low-fidelity model
             fine_model: High-fidelity model
             w: Weight for the resynchronization kernel (default is 0.0, which means no resynchronization)
+            resync_type: Type of resynchronization kernel to use. Options are 'maximal', 'independent', or 'lot' (linear optimal transport).
         """
         self.coarse_model = coarse_model
         self.fine_model = fine_model

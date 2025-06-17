@@ -104,7 +104,7 @@ class MCMCsampler:
             else:
 
                 # Propose a new state
-                proposed_state = self.kernel.propose(self.proposal, current_state) # Metadata is copied from current_state
+                proposed_state, current_state = self.kernel.propose(self.proposal, current_state) # Metadata is copied from current_state
 
                 # Compute the acceptance ratio
                 ar = self.kernel.acceptance_ratio(self.proposal, current_state, proposed_state)

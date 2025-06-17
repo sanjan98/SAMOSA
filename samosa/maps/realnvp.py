@@ -3,17 +3,73 @@ Class file for the RealNVP transport map using "https://github.com/xqding/RealNV
 This repo is used for density estimation that is exactly what I need
 """
 
-# Check this file
-# STOPPED HERE
-
 # Imports
 import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.init as init
 
 from samosa.core.map import TransportMap
 from samosa.core.state import ChainState
 from scipy.stats import multivariate_normal
 from samosa.utils.post_processing import get_position_from_states
 from typing import List
+
+class RealNVPMap(TransportMap):
+    """
+    Class for the RealNVP transport map using pytorch.
+    """
+
+    def __init__(self, masks, hidden_dim, samples, learning_rate):
+        # realNVP = RealNVP_2D(masks, hidden_dim)
+        # if torch.cuda.device_count():
+        #     realNVP = realNVP.cuda()
+        # device = next(realNVP.parameters()).device
+
+        X_tensor = torch.Tensor(samples)
+
+        ## Create dataset and dataloader (keep same structure)
+        batch_size = 500
+        dataset = torch.utils.data.TensorDataset(X_tensor)
+        dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+        ## Initialize model on CPU
+        device = torch.device("cpu")
+        realNVP = RealNVP_2D(masks, hidden_dim).to(device)
+        optimizer = optim.Adam(realNVP.parameters(), lr=learning_rate)
+
+        ## Training loop remains similar
+        num_epochs = 100
+        print_interval = 10
+
+        for epoch in range(num_epochs):
+            epoch_loss = 0.0
+            num_batches = 0
+            
+            for batch in dataloader:
+                X = batch[0].to(device)
+                
+                # Forward pass through model
+                z, logdet = realNVP.inverse(X)
+                
+                # Loss calculation (same as before)
+                loss = torch.log(z.new_tensor([2*math.pi])) + torch.mean(torch.sum(0.5*z**2, -1) - logdet)
+                
+                # Backpropagation
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                
+                epoch_loss += loss.item()
+                num_batches += 1
+            
+            # Print training progress
+            avg_loss = epoch_loss / num_batches
+            if (epoch + 1) % print_interval == 0:
+                print(f"Epoch [{epoch+1}/{num_epochs}], Avg Loss: {avg_loss:.5f}")
+
+        self.realNVP = realNVP    
 
 
 class Affine_Coupling(nn.Module):
@@ -124,57 +180,7 @@ class RealNVP_2D(nn.Module):
             
         return x, logdet_tot
     
-class realnvpmap():
 
-def __init__(self, masks, hidden_dim, samples, learning_rate):
-    # realNVP = RealNVP_2D(masks, hidden_dim)
-    # if torch.cuda.device_count():
-    #     realNVP = realNVP.cuda()
-    # device = next(realNVP.parameters()).device
-
-    X_tensor = torch.Tensor(samples)
-
-    ## Create dataset and dataloader (keep same structure)
-    batch_size = 500
-    dataset = torch.utils.data.TensorDataset(X_tensor)
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-    ## Initialize model on CPU
-    device = torch.device("cpu")
-    realNVP = RealNVP_2D(masks, hidden_dim).to(device)
-    optimizer = optim.Adam(realNVP.parameters(), lr=learning_rate)
-
-    ## Training loop remains similar
-    num_epochs = 100
-    print_interval = 10
-
-    for epoch in range(num_epochs):
-        epoch_loss = 0.0
-        num_batches = 0
-        
-        for batch in dataloader:
-            X = batch[0].to(device)
-            
-            # Forward pass through model
-            z, logdet = realNVP.inverse(X)
-            
-            # Loss calculation (same as before)
-            loss = torch.log(z.new_tensor([2*math.pi])) + torch.mean(torch.sum(0.5*z**2, -1) - logdet)
-            
-            # Backpropagation
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            
-            epoch_loss += loss.item()
-            num_batches += 1
-        
-        # Print training progress
-        avg_loss = epoch_loss / num_batches
-        if (epoch + 1) % print_interval == 0:
-            print(f"Epoch [{epoch+1}/{num_epochs}], Avg Loss: {avg_loss:.5f}")
-
-    self.realNVP = realNVP    
 
 # Map induced pdf
 def pullback_pdf(self, rho, x):

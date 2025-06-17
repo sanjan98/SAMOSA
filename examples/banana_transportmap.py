@@ -44,18 +44,18 @@ def banana_model(x: np.ndarray) -> Dict[str, Any]:
 from samosa.proposals.gaussianproposal import GaussianRandomWalk
 from samosa.samplers.single_chain import MCMCsampler
 from samosa.utils.post_processing import load_samples
-from samosa.utils.post_processing import get_position_from_states
-
-# Load samples from the output directory
-with open(f'examples/banana/samples.pkl', "rb") as f:
-    samples = pickle.load(f)
-
-# Take only the first 5000 samples for the transport map
-samples = samples[:5000]
+from samosa.utils.post_processing import get_position_from_states, get_reference_position_from_states
 
 # Now start the Transport map sampling
 from samosa.kernels.metropolis_transport import TransportMetropolisHastingsKernel
 from samosa.maps.triangular import LowerTriangularMap
+
+# Load samples from the output directory
+with open(f'examples/banana-delayedrejection/samples.pkl', "rb") as f:
+    samples = pickle.load(f)
+
+# Take only the first 5000 samples for the transport map
+samples = samples[:10000]
 
 # Define the model
 model = banana_model
@@ -68,19 +68,25 @@ map.adapt(samples, force_adapt=True)
 kernel = TransportMetropolisHastingsKernel(model, map)
 
 # Redefine the sampler
-proposal = GaussianRandomWalk(mu=np.zeros((2,1)), sigma=np.eye(2))
+proposal = GaussianRandomWalk(mu=np.zeros((2,1)), sigma=0.5*np.eye(2))
+
+# Define the output directory
+output = 'examples/banana-transport-mpart'
 
 # Define the sampler
-sampler = MCMCsampler(model, kernel, proposal, initial_position=samples[-1].position, n_iterations=50000, save_iteraton=10000)
-ar2 = sampler.run('examples/banana_transport')
+sampler = MCMCsampler(model, kernel, proposal, initial_position=samples[-1].position, n_iterations=50000, save_iteraton=100000, restart=samples)
+ar2 = sampler.run(output)
 print("Acceptance rate:", ar2)
 
-samples_transport = load_samples('examples/banana_transport')
+samples_transport = load_samples(output)
 
 # Get the positions of the samples
 burnin = 0.25
 positions = get_position_from_states(samples_transport, burnin)
 print("Positions shape:", positions.shape)
+
+reference_positions = get_reference_position_from_states(samples_transport, burnin)
+print("Reference positions shape:", reference_positions.shape)
 
 print("Mean of the samples:", np.mean(positions, axis=1))
 print("Standard deviation of the samples:", np.std(positions, axis=1))
@@ -88,15 +94,18 @@ print("Standard deviation of the samples:", np.std(positions, axis=1))
 # Plot the scatter plot of the samples
 from samosa.utils.post_processing import scatter_matrix, plot_trace, plot_lag
 fig, _, _ = scatter_matrix([positions])
-plt.savefig('examples/banana_transport/scatter.png')
+plt.savefig(f'{output}/scatter.png')
+
+fig, _, _ = scatter_matrix([reference_positions])
+plt.savefig(f'{output}/reference_scatter.png')
 
 # Plot the trace of the samples
 fig, _ = plot_trace(positions)
-plt.savefig('examples/banana_transport/trace.png')
+plt.savefig(f'{output}/trace.png')
 
 # Plot the lag of the samples
 fig, _ = plot_lag(positions)
-plt.savefig('examples/banana_transport/lag.png')
+plt.savefig(f'{output}/lag.png')
 
 # Plot the log posterior using seaborn
 plt.figure(figsize=(10, 8))
@@ -104,16 +113,15 @@ import seaborn as sns
 sns.set_style("white")
 
 x1 = np.linspace(-4, 4, 100)
-x2 = np.linspace(-3, 7, 100)
+x2 = np.linspace(-6, 4, 100)
 X1, X2 = np.meshgrid(x1, x2)
 x = np.vstack([X1.ravel(), X2.ravel()])
 
 # Compute the log posterior
-output = banana_model(x)
-# output = Gaussian_model(x)
+banana_output = banana_model(x)
 
 # Reshape the output
-log_posterior = output['log_posterior'].reshape(X1.shape)
+log_posterior = banana_output['log_posterior'].reshape(X1.shape)
 log_posterior = np.exp(log_posterior)  # Convert log posterior to posterior
 
 # Define the inputs
@@ -126,10 +134,7 @@ plt.contour(X1, X2, log_posterior, levels=7, cmap="viridis", linewidths=1.5)
 # Add pullback pdf
 pullback_pdf = sampler.kernel.map.pullback(x)
 plt.contour(X1, X2, pullback_pdf.reshape(X1.shape), levels=7, cmap="plasma", linestyles='dashed', linewidths=1.5)
-
-plt.colorbar(label='Log Posterior')
-plt.title('Banana Model Log Posterior', fontsize=14)
 plt.xlabel('x1', fontsize=12)
 plt.ylabel('x2', fontsize=12)
 plt.grid(True, linestyle='--', alpha=0.7)
-plt.savefig('examples/banana_transport/pullback_pdf.png')
+plt.savefig(f'{output}/pullback_pdf.png')

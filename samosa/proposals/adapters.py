@@ -20,7 +20,7 @@ class HaarioAdapter(AdapterBase):
     def adapt(self, proposal: ProposalProtocol, state: ChainState) -> None:
         """Adapt the proposal covariance based on the history of samples"""
 
-        x = state.position
+        x = state.reference_position if state.reference_position is not None else state.position
         iteration = state.metadata['iteration']
         xmean_minus = state.metadata['mean']
         xcov_minus = state.metadata['covariance']
@@ -61,7 +61,7 @@ class GlobalAdapter(AdapterBase):
     def adapt(self, proposal: ProposalProtocol, state: ChainState,) -> None:
         """Adapt the proposal covariance based on the target acceptance rate"""
 
-        x = state.position
+        x = state.reference_position if state.reference_position is not None else state.position
         iteration = state.metadata['iteration']
         gamma = (self.C) / (iteration ** self.alpha)
         xmean_minus = state.metadata['mean']

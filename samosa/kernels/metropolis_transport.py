@@ -9,6 +9,7 @@ from samosa.core.kernel import KernelProtocol
 from samosa.core.proposal import ProposalProtocol
 from samosa.core.model import ModelProtocol
 
+from dataclasses import replace
 from typing import Any, List
 
 class TransportMetropolisHastingsKernel(KernelProtocol):
@@ -35,22 +36,28 @@ class TransportMetropolisHastingsKernel(KernelProtocol):
         """
 
         # Get the current position in the reference space
-        r, _ = self.map.forward(current_state.position)
+        r, logdet_current = self.map.forward(current_state.position)
+        # Update the current state with the reference position
+        current_state = replace(current_state, reference_position=r)
+        current_state.metadata['logdetT'] = logdet_current
+
+        # Dummy state for the proposal
         current_reference = ChainState(position=r, log_posterior=None)
        
         # Sample a new state using the proposal
         rprime = proposal.sample(current_reference).position
 
         # Send the proposed state back to the original space
-        proposed_position, _ = self.map.inverse(rprime)
+        proposed_position, logdet_proposed = self.map.inverse(rprime)
         
         # Compute the attributes of the proposed state
         model_result = self.model(proposed_position)
 
         # Create a new ChainState object for the proposed state
-        proposed_state = ChainState(position=proposed_position, **model_result, metadata=current_state.metadata.copy())
+        proposed_state = ChainState(position=proposed_position, reference_position=rprime, **model_result, metadata=current_state.metadata.copy())
+        proposed_state.metadata['logdetT'] = -logdet_proposed
         
-        return proposed_state
+        return proposed_state, current_state
     
     def acceptance_ratio(self, proposal: ProposalProtocol, current: ChainState, proposed: ChainState) -> float:
         """
@@ -64,8 +71,12 @@ class TransportMetropolisHastingsKernel(KernelProtocol):
             ar: Acceptance ratio
         """
 
-        r, logdet_current = self.map.forward(current.position)
-        rprime, logdet_proposed = self.map.forward(proposed.position)
+        # r, logdet_current = self.map.forward(current.position)
+        # rprime, logdet_proposed = self.map.forward(proposed.position)
+        r = current.reference_position
+        rprime = proposed.reference_position
+        logdet_current = current.metadata['logdetT']
+        logdet_proposed = proposed.metadata['logdetT']
 
         current_reference = ChainState(position=r, log_posterior=None)
         proposed_reference = ChainState(position=rprime, log_posterior=None)

@@ -18,23 +18,27 @@ class TransportSYNCEKernel(KernelProtocol):
     Maintains two chains (high-fidelity and low-fidelity) and proposes coupled moves.
     """
 
-    def __init__(self, coarse_model: ModelProtocol, fine_model: ModelProtocol, coarse_map: Any, fine_map: Any, coupletype: str = 'direct'):
+    def __init__(self, coarse_model: ModelProtocol, fine_model: ModelProtocol, coarse_map: Any, fine_map: Any, w: float = 0.0, coupletype: str = 'direct'):
         """
         Initialize the SYNCE Coupled kernel.
         
         Args:
             coarse_model: Low-fidelity model
             fine_model: High-fidelity model
+            coarse_map: Transport map for the low-fidelity model
+            fine_map: Transport map for the high-fidelity model
+            w: Weight for the resynchronization kernel (default is 0.0, which means no resynchronization)
         """
         self.coarse_model = coarse_model
         self.fine_model = fine_model
         self.coarse_map = coarse_map
         self.fine_map = fine_map
+        self.w = w
         if coupletype not in ['deep', 'direct']:
             raise ValueError("coupletype must be either 'deep' or 'direct'")
         self.coupletype = coupletype
         
-    def propose(self, proposal_coarse: ProposalProtocol, proposal_fine: ProposalProtocol, current_coarse_state: ChainState, current_fine_state: ChainState) -> Tuple[ChainState, ChainState, float, float, float, float]:
+    def propose(self, proposal_coarse: ProposalProtocol, proposal_fine: ProposalProtocol, current_coarse_state: ChainState, current_fine_state: ChainState) -> Tuple[ChainState, ChainState]:
         """
         Generate a candidate state for both chains.
         
@@ -45,7 +49,7 @@ class TransportSYNCEKernel(KernelProtocol):
             current_fine_state: Current state of the high-fidelity chain
             
         Returns:
-            Tuple of proposed states for the low-fidelity and high-fidelity chains, along with log determinants
+            Tuple of proposed states for the low-fidelity and high-fidelity chains
         """
 
         dim = current_coarse_state.position.shape[0]
@@ -54,39 +58,55 @@ class TransportSYNCEKernel(KernelProtocol):
         coarse_theta = current_coarse_state.position
         fine_theta = current_fine_state.position
 
-        coarse_r, _ = self.coarse_map.forward(coarse_theta)
+        coarse_r, logdet_current_coarse = self.coarse_map.forward(coarse_theta)
 
         # Bring the corase sample to the reference space
         # Depending on type of couplingtype, bring it back to the right space
         if self.coupletype == 'deep':
             
             # Bring the fine sample to the coarse space
-            ftoc_theta, _ = self.fine_map.forward(fine_theta)
-            fine_r, _ = self.coarse_map.forward(ftoc_theta)
+            ftoc_theta, logdet_ftoc_fine = self.fine_map.forward(fine_theta)
+            fine_r, logdet_ctor_fine = self.coarse_map.forward(ftoc_theta)
+            logdet_current_fine = logdet_ftoc_fine + logdet_ctor_fine
 
         elif self.coupletype == 'direct':
 
             # Bring the fine sample to the reference space
-            fine_r, _ = self.fine_map.forward(fine_theta)
+            fine_r, logdet_current_fine = self.fine_map.forward(fine_theta)
 
         # Propose the common step from the standard Gaussian
         eta = sample_multivariate_gaussian(np.zeros((dim, 1)), np.eye(dim))
 
-        # Propose a move for the low-fidelity chain
-        coarse_rprime = coarse_r + np.linalg.cholesky(proposal_coarse.cov) @ eta if hasattr(proposal_coarse, 'cov') else coarse_r + np.linalg.cholesky(proposal_coarse.proposal.cov) @ eta
-        # Propose a move for the high-fidelity chain
-        fine_rprime = fine_r + np.linalg.cholesky(proposal_fine.cov) @ eta if hasattr(proposal_fine, 'cov') else fine_r + np.linalg.cholesky(proposal_fine.proposal.cov) @ eta
+        # Sample a uniform random number to decide whether to resynchronize or not
+        u = np.random.rand()
+
+        if u < self.w:
+            # Resynchronization step
+            # Propose a move for the low-fidelity chain
+            coarse_rprime = np.linalg.cholesky(proposal_coarse.cov) @ eta if hasattr(proposal_coarse, 'cov') else np.linalg.cholesky(proposal_coarse.proposal.cov) @ eta
+            # Propose a move for the high-fidelity chain
+            fine_rprime = np.linalg.cholesky(proposal_fine.cov) @ eta if hasattr(proposal_fine, 'cov') else np.linalg.cholesky(proposal_fine.proposal.cov) @ eta
+
+        else:
+            # If no resynchronization, propose a move for both chains independently
+            # Propose a move for the low-fidelity chain
+            coarse_rprime = coarse_r + np.linalg.cholesky(proposal_coarse.cov) @ eta if hasattr(proposal_coarse, 'cov') else coarse_r + np.linalg.cholesky(proposal_coarse.proposal.cov) @ eta
+            # Propose a move for the high-fidelity chain
+            fine_rprime = fine_r + np.linalg.cholesky(proposal_fine.cov) @ eta if hasattr(proposal_fine, 'cov') else fine_r + np.linalg.cholesky(proposal_fine.proposal.cov) @ eta
 
         # Bring the coarse sample back to the original space
-        coarse_thetaprime, _ = self.coarse_map.inverse(coarse_rprime)
+        coarse_thetaprime, logdet_proposed_coarse_temp = self.coarse_map.inverse(coarse_rprime)
+        logdet_proposed_coarse = -logdet_proposed_coarse_temp
 
         # Bring the fine sample back to the original space
         if self.coupletype == 'deep':
-            rtoc_tetaprime, _ = self.coarse_map.inverse(fine_rprime)
-            fine_thetaprime, _ = self.fine_map.inverse(rtoc_tetaprime)
+            rtoc_tetaprime, logdet_rtoc_fine = self.coarse_map.inverse(fine_rprime)
+            fine_thetaprime, logdet_ctof_fine = self.fine_map.inverse(rtoc_tetaprime)
+            logdet_proposed_fine = -(logdet_rtoc_fine + logdet_ctof_fine)
 
         elif self.coupletype == 'direct':
-            fine_thetaprime, _ = self.fine_map.inverse(fine_rprime)
+            fine_thetaprime, logdet_proposed_fine_temp = self.fine_map.inverse(fine_rprime)
+            logdet_proposed_fine = -logdet_proposed_fine_temp
 
         # Evaluate the low-fidelity model
         coarse_model_result = self.coarse_model(coarse_thetaprime)
@@ -94,9 +114,9 @@ class TransportSYNCEKernel(KernelProtocol):
         fine_model_result = self.fine_model(fine_thetaprime)
 
         # Create new ChainState objects for the proposed states
-        proposed_coarse_state = ChainState(position=coarse_thetaprime, **coarse_model_result, metadata=current_coarse_state.metadata.copy())
+        proposed_coarse_state = ChainState(position=coarse_thetaprime, reference_position=coarse_rprime, **coarse_model_result, metadata=current_coarse_state.metadata.copy())
 
-        proposed_fine_state = ChainState(position=fine_thetaprime, **fine_model_result, metadata=current_fine_state.metadata.copy())
+        proposed_fine_state = ChainState(position=fine_thetaprime, reference_position=fine_rprime, **fine_model_result, metadata=current_fine_state.metadata.copy())
 
         return proposed_coarse_state, proposed_fine_state
     

@@ -70,10 +70,10 @@ class DelayedRejectionKernel(KernelProtocol):
             u2 = np.random.rand()
             if ar2 == 1.0 or u2 < ar2:
                 # Accept the second stage
-                return proposed_state2
+                return proposed_state2, current
             else:
                 # Reject both stages
-                return current
+                return current, current
     
     def acceptance_ratio(self, proposal: ProposalProtocol, current: ChainState, proposed: ChainState) -> float:
         """

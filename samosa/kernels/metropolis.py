@@ -39,7 +39,7 @@ class MetropolisHastingsKernel(KernelProtocol):
         # Create a new ChainState object for the proposed state
         proposed_state = ChainState(position=proposed_position, **model_result, metadata=current_state.metadata.copy())
         
-        return proposed_state
+        return proposed_state, current_state
     
     def acceptance_ratio(self, proposal: ProposalProtocol, current: ChainState, proposed: ChainState) -> float:
         """

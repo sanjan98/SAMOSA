@@ -1,7 +1,7 @@
 """
 Class file for the lower triangular map using MParT
 Currently the source distribution is assumed to be a standard Gaussian as otherwise we will need the gradient of the logpdf of the source distribution for the optimization
-Maybe this feature can be added later
+Maybe this feature can be added later (probably not)
 """
 
 # Imports
@@ -10,20 +10,19 @@ import mpart as mt
 
 from samosa.core.map import TransportMap
 from samosa.core.state import ChainState
+from samosa.core.model import ModelProtocol
 from scipy.optimize import minimize
 from scipy.stats import multivariate_normal
 from samosa.utils.post_processing import get_position_from_states
 from samosa.utils.tools import lognormpdf
-from typing import List
+from typing import List, Optional, Any
 
 class LowerTriangularMap(TransportMap):
     """
     Class for the lower triangular map using MParT.
-    
-    Attributes:ß
     """
 
-    def __init__(self, dim: int, total_order: int = 2, adapt_start: int = 500, adapt_end: int = 1000, adapt_interval: int = 100):
+    def __init__(self, dim: int, total_order: int = 2, adapt_start: int = 500, adapt_end: int = 1000, adapt_interval: int = 100, reference_model: Optional[ModelProtocol] = None):
         
         """
         Initialize the lower triangular map.
@@ -33,6 +32,7 @@ class LowerTriangularMap(TransportMap):
             adapt_start: Start iteration for adaptation.
             adapt_end: End iteration for adaptation.
             adapt_interval: Interval for adaptation.
+            reference_model: Optional reference model for the map (If none is provided, a standard Gaussian is assumed).
         """
 
         self.dim = dim
@@ -40,6 +40,7 @@ class LowerTriangularMap(TransportMap):
         self.adapt_start = adapt_start
         self.adapt_end = adapt_end
         self.adapt_interval = adapt_interval
+        self.reference_model = reference_model
 
         # Set some default values for mean and std
         self.mean = np.zeros((dim, 1))
@@ -109,10 +110,16 @@ class LowerTriangularMap(TransportMap):
 
         # Get positions from states
         positions = get_position_from_states(samples)
+
+        # Check if reference model is provided
+        if self.reference_model is None:         
+            # Standardize the positions of shape (dim, n_samples)
+            self.mean = np.mean(positions, axis=1, keepdims=True)
+            self.std = np.std(positions, axis=1, keepdims=True)
+        else:
+            self.mean = np.zeros((self.dim, 1))
+            self.std = np.ones((self.dim, 1))
         
-        # Standardize the positions of shape (dim, n_samples)
-        self.mean = np.mean(positions, axis=1, keepdims=True)
-        self.std = np.std(positions, axis=1, keepdims=True)
         # Standardize the positions
         x = (positions - self.mean) / self.std
         self.x = x
@@ -151,24 +158,30 @@ class LowerTriangularMap(TransportMap):
     def _optimize_map(self):
         optimizer_options={'gtol': 1e-6, 'disp': True}
 
-        # Loop through each component to print initial coefficients, compute objectives, and optimize
-        for idx, (component, x_segment) in enumerate(zip(self.comps, [self.x[:i+1, :] for i in range(self.dim)])):
-            print('==================')
-            print(f'Starting coeffs component {idx + 1}:')
-            print(component.CoeffMap())
-            print(f'Objective value for component {idx + 1}: {self.obj(component.CoeffMap(), component, x_segment):.2E}')
-            print('==================')
+        if self.reference_model is None:
 
-            # Optimize for each component
-            optimizer_options = {'gtol': 1e-6, 'disp': True}
-            res = minimize(self.obj, component.CoeffMap(), args=(component, x_segment), jac=self.grad_obj, method='BFGS', options=optimizer_options)
+            # Loop through each component to print initial coefficients, compute objectives, and optimize
+            for idx, (component, x_segment) in enumerate(zip(self.comps, [self.x[:i+1, :] for i in range(self.dim)])):
+                print('==================')
+                print(f'Starting coeffs component {idx + 1}:')
+                print(component.CoeffMap())
+                print(f'Objective value for component {idx + 1}: {self.obj(component.CoeffMap(), component, x_segment):.2E}')
+                print('==================')
 
-            # Print final coeffs and objective
-            print('==================')
-            print(f'Final coeffs component {idx + 1}:')
-            print(component.CoeffMap())
-            print(f'Objective value for component {idx + 1}: {self.obj(component.CoeffMap(), component, x_segment):.2E}')
-            print('==================')
+                # Optimize for each component
+                optimizer_options = {'gtol': 1e-6, 'disp': True}
+                res = minimize(self.obj, component.CoeffMap(), args=(component, x_segment), jac=self.grad_obj, method='BFGS', options=optimizer_options)
+
+                # Print final coeffs and objective
+                print('==================')
+                print(f'Final coeffs component {idx + 1}:')
+                print(component.CoeffMap())
+                print(f'Objective value for component {idx + 1}: {self.obj(component.CoeffMap(), component, x_segment):.2E}')
+                print('==================')
+        
+        else:
+            # If a reference model is provided, we can use it to optimize the map
+            res = minimize(self.obj, self.ttm.CoeffMap(), args=(self.ttm, self.x), method='BFGS', options=optimizer_options)
 
     def pullback(self, x):
         """
@@ -187,18 +200,23 @@ class LowerTriangularMap(TransportMap):
         pull_back_pdf = np.exp(log_pullback_pdf)
         return pull_back_pdf
 
-    @staticmethod
     # Negative log likelihood objective
-    def obj(coeffs, tri_map, x):
+    def obj(self, coeffs, tri_map, x):
         """ Evaluates the log-likelihood of the samples using the map-induced density. """
         num_points = x.shape[1]
         tri_map.SetCoeffs(coeffs)
-        # Reference density
-        rho1 = multivariate_normal(np.zeros(1),np.eye(1))
 
         # Compute the map-induced density at each point
         map_of_x = tri_map.Evaluate(x)
-        rho_of_map_of_x = rho1.logpdf(map_of_x.T)
+
+        if self.reference_model is None:
+            # Reference density
+            rho1 = multivariate_normal(np.zeros(1),np.eye(1))
+            rho_of_map_of_x = rho1.logpdf(map_of_x.T)
+        else:
+            # Use the reference model to compute the density
+            rho_of_map_of_x = self.reference_model(map_of_x)['log_posterior']
+            
         log_det = tri_map.LogDeterminant(x)
 
         # Return the negative log-likelihood of the entire dataset
