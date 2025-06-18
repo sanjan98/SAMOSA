@@ -74,7 +74,7 @@ def load_coupled_samples(output_dir: str, iteration: int = None) -> List[ChainSt
             samples_fine = pickle.load(f)
             return samples_coarse, samples_fine
 
-def get_position_from_states(samples: List[ChainState], burnin: Optional[float] = 0.25) -> np.ndarray:
+def get_position_from_states(samples: List[ChainState], burnin: Optional[float] = 0.0) -> np.ndarray:
     """
     From a list of ChainState objects, extract the position of each state.
 
@@ -110,7 +110,7 @@ def get_position_from_states(samples: List[ChainState], burnin: Optional[float] 
     # Convert to numpy array and transpose to (d, N) format
     return np.column_stack(positions)
 
-def get_reference_position_from_states(samples: List[ChainState], burnin: Optional[float] = 0.25) -> np.ndarray:
+def get_reference_position_from_states(samples: List[ChainState], burnin: Optional[float] = 0.0) -> np.ndarray:
     """
     From a list of ChainState objects, extract the position of each state.
 

@@ -18,13 +18,12 @@ import numpy as np
 from samosa.utils.tools import log_banana, log_quartic, lognormpdf
 import matplotlib.pyplot as plt
 
-def banana(x: np.ndarray) -> np.ndarray:
+def banana(x: np.ndarray, shift: float = 0.0) -> np.ndarray:
     """
     Log-PDF of a banana distribution.
     """
 
     assert x.ndim == 2, "Input must be a 2D array."
-    shift = -5.0  # Shift applied here
     log_posterior = log_banana(x, shift=shift)
 
     output = {}
@@ -37,13 +36,12 @@ def banana(x: np.ndarray) -> np.ndarray:
 
     return output
 
-def quartic(x: np.ndarray) -> np.ndarray:
+def quartic(x: np.ndarray, shift: float = 0.0) -> np.ndarray:
     """
     Log-PDF of a quartic banana distribution.
     """
     
     assert x.ndim == 2, "Input must be a 2D array."
-    shift = 5.0  
     log_posterior = log_quartic(x, shift=shift)
 
     output = {}

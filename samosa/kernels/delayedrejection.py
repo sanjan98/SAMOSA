@@ -8,7 +8,7 @@ from samosa.core.state import ChainState
 from samosa.core.model import ModelProtocol
 from samosa.core.proposal import ProposalProtocol
 from samosa.core.kernel import KernelProtocol
-from typing import Optional
+from typing import Optional, Tuple
 
 class DelayedRejectionKernel(KernelProtocol):
     """
@@ -30,7 +30,7 @@ class DelayedRejectionKernel(KernelProtocol):
         # Keep track of all intermediate states for multi-stage acceptance
         self.first_stage_state: Optional[ChainState] = None
 
-    def propose(self, proposal: ProposalProtocol, current: 'ChainState') -> 'ChainState':
+    def propose(self, proposal: ProposalProtocol, current: 'ChainState') -> Tuple['ChainState','ChainState']:
         
         proposed_state1 = self._proposestate(proposal, current)
         # Store the first stage state
@@ -42,7 +42,7 @@ class DelayedRejectionKernel(KernelProtocol):
         if ar1 == 1.0 or u < ar1:
             # Accept the first stage
             self.ar = ar1 # Store the acceptance ratio
-            return proposed_state1
+            return proposed_state1, current
         else:
             # If the first stage is rejected, propose a second stage
             # Temporarily scale the covariance

@@ -181,7 +181,22 @@ class LowerTriangularMap(TransportMap):
         
         else:
             # If a reference model is provided, we can use it to optimize the map
+
+            # Print initial coefficients and objective
+            print('==================')
+            print('Starting coeffs (reference model case):')
+            print(self.ttm.CoeffMap())
+            print(f'Objective value (reference model case): {self.obj(self.ttm.CoeffMap(), self.ttm, self.x):.2E}')
+            print('==================')
+
             res = minimize(self.obj, self.ttm.CoeffMap(), args=(self.ttm, self.x), method='BFGS', options=optimizer_options)
+            
+            # Print final coefficients and objective
+            print('==================')
+            print('Final coeffs (reference model case):')
+            print(self.ttm.CoeffMap())
+            print(f'Objective value (reference model case): {self.obj(self.ttm.CoeffMap(), self.ttm, self.x):.2E}')
+            print('==================')
 
     def pullback(self, x):
         """
@@ -196,7 +211,11 @@ class LowerTriangularMap(TransportMap):
         # Compute the forward map
         r, logdet = self.forward(x)
 
-        log_pullback_pdf = lognormpdf(r, np.zeros((self.dim, 1)), np.eye(self.dim)) + logdet
+        if self.reference_model is None:
+            log_pullback_pdf = lognormpdf(r, np.zeros((self.dim, 1)), np.eye(self.dim)) + logdet
+        else:
+            # Use the reference model to compute the log pdf
+            log_pullback_pdf = self.reference_model(r)['log_posterior'] + logdet
         pull_back_pdf = np.exp(log_pullback_pdf)
         return pull_back_pdf
 

@@ -2,7 +2,6 @@
 Class file for a single chain MCMC sampler.
 """
 
-from samosa.core.model import ModelProtocol
 from samosa.core.state import ChainState
 from samosa.core.kernel import KernelProtocol
 from samosa.core.proposal import ProposalProtocol
@@ -29,20 +28,20 @@ class MCMCsampler:
         restart (list): List of states to restart the chain from.
     """
     
-    def __init__(self,  model: ModelProtocol, kernel: KernelProtocol, proposal: ProposalProtocol, initial_position: np.ndarray, n_iterations: int, print_iteration: int = 1000, save_iteraton: int = 1000, restart: List[ChainState] = None):
+    def __init__(self, kernel: KernelProtocol, proposal: ProposalProtocol, initial_position: np.ndarray, n_iterations: int, print_iteration: int = 1000, save_iteraton: int = 1000, restart: List[ChainState] = None):
 
         dim = initial_position.shape[0]
         self.dim = dim
         self.kernel = kernel
         self.proposal = proposal
-        self.model = model
+        self.model = kernel.model
         self.restart = restart
 
         if self.restart is not None:
             self.initial_state = self.restart[-1]
             self.start_iteration = self.restart[-1].metadata['iteration'] + 1
         else:
-            self.initial_state = ChainState(position=initial_position, **model(initial_position), metadata={
+            self.initial_state = ChainState(position=initial_position, **self.model(initial_position), metadata={
                 'covariance': proposal.sigma if hasattr(proposal, 'sigma') else proposal.proposal.sigma,
                 'mean': initial_position,
                 'lambda': 2.4**2 / dim,
@@ -89,7 +88,7 @@ class MCMCsampler:
 
             # Check for delayed rejection kernel
             if self.is_delayed_rejection:
-                proposed_state = self.kernel.propose(self.proposal, current_state)
+                proposed_state, current_state = self.kernel.propose(self.proposal, current_state)
 
                 # Check if state was changed
                 if proposed_state is not current_state:

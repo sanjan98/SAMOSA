@@ -2,7 +2,6 @@
 Class file for a single chain MCMC sampler.
 """
 
-from samosa.core.model import ModelProtocol
 from samosa.core.state import ChainState
 from samosa.core.kernel import KernelProtocol
 from samosa.core.proposal import ProposalProtocol
@@ -25,7 +24,7 @@ class coupledMCMCsampler:
         n_iterations (int): Number of iterations to run the sampler.
     """
     
-    def __init__(self,  coarse_model: ModelProtocol, fine_model: ModelProtocol, kernel: KernelProtocol, proposal_coarse: ProposalProtocol, proposal_fine: ProposalProtocol, initial_position_coarse: np.ndarray, initial_position_fine: np.ndarray, n_iterations: int, print_iteration: int = 1000, save_iteration: int = 1000, restart_coarse: List[ChainState] = None, restart_fine: List[ChainState] = None):
+    def __init__(self, kernel: KernelProtocol, proposal_coarse: ProposalProtocol, proposal_fine: ProposalProtocol, initial_position_coarse: np.ndarray, initial_position_fine: np.ndarray, n_iterations: int, print_iteration: int = 1000, save_iteration: int = 1000, restart_coarse: List[ChainState] = None, restart_fine: List[ChainState] = None):
 
         dim = initial_position_coarse.shape[0]
         assert dim == initial_position_fine.shape[0], "The dimensions of the two chains must be the same."
@@ -36,8 +35,8 @@ class coupledMCMCsampler:
         self.proposal_coarse = proposal_coarse
         self.proposal_fine = proposal_fine
 
-        self.coarse_model = coarse_model
-        self.fine_model = fine_model
+        self.coarse_model = kernel.coarse_model
+        self.fine_model = kernel.fine_model
 
         self.restart_coarse = restart_coarse
         self.restart_fine = restart_fine
@@ -49,7 +48,7 @@ class coupledMCMCsampler:
             self.initial_state_coarse = self.restart_coarse[-1]
             self.start_iteration = self.restart_coarse[-1].metadata['iteration'] + 1
         else:
-            self.initial_state_coarse = ChainState(position=initial_position_coarse, **coarse_model(initial_position_coarse), metadata={
+            self.initial_state_coarse = ChainState(position=initial_position_coarse, **self.coarse_model(initial_position_coarse), metadata={
                 'covariance': proposal_coarse.sigma if hasattr(proposal_coarse, 'sigma') else proposal_coarse.proposal.sigma,
                 'mean': initial_position_coarse,
                 'lambda': 2.4**2 / dim,
@@ -61,7 +60,7 @@ class coupledMCMCsampler:
         if self.restart_fine is not None:
             self.initial_state_fine = self.restart_fine[-1]
         else:    
-            self.initial_state_fine = ChainState(position=initial_position_fine, **fine_model(initial_position_fine), metadata={
+            self.initial_state_fine = ChainState(position=initial_position_fine, **self.fine_model(initial_position_fine), metadata={
                 'covariance': proposal_fine.sigma if hasattr(proposal_fine, 'sigma') else proposal_fine.proposal.sigma,
                 'mean': initial_position_fine,
                 'lambda': 2.4**2 / dim,
