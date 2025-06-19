@@ -9,8 +9,8 @@ from samosa.core.model import ModelProtocol
 from samosa.core.proposal import ProposalProtocol
 from samosa.core.kernel import KernelProtocol
 from samosa.utils.tools import sample_multivariate_gaussian
-from samosa.kernels.metropolis import MetropolisHastingsKernel
-from typing import Tuple, Dict, List, Any
+from typing import Tuple, List, Any
+from dataclasses import replace
 
 class TransportSYNCEKernel(KernelProtocol):
     """
@@ -18,7 +18,7 @@ class TransportSYNCEKernel(KernelProtocol):
     Maintains two chains (high-fidelity and low-fidelity) and proposes coupled moves.
     """
 
-    def __init__(self, coarse_model: ModelProtocol, fine_model: ModelProtocol, coarse_map: Any, fine_map: Any, w: float = 0.0, coupletype: str = 'direct'):
+    def __init__(self, coarse_model: ModelProtocol, fine_model: ModelProtocol, coarse_map: Any, fine_map: Any, w: float = 0.0):
         """
         Initialize the SYNCE Coupled kernel.
         
@@ -34,11 +34,12 @@ class TransportSYNCEKernel(KernelProtocol):
         self.coarse_map = coarse_map
         self.fine_map = fine_map
         self.w = w
-        if coupletype not in ['deep', 'direct']:
-            raise ValueError("coupletype must be either 'deep' or 'direct'")
-        self.coupletype = coupletype
+        if self.fine_map.reference_model is None:
+            self.coupletype = 'direct'
+        else:
+            self.coupletype = 'deep'
         
-    def propose(self, proposal_coarse: ProposalProtocol, proposal_fine: ProposalProtocol, current_coarse_state: ChainState, current_fine_state: ChainState) -> Tuple[ChainState, ChainState]:
+    def propose(self, proposal_coarse: ProposalProtocol, proposal_fine: ProposalProtocol, current_coarse_state: ChainState, current_fine_state: ChainState) -> Tuple[ChainState, ChainState, ChainState, ChainState]:
         """
         Generate a candidate state for both chains.
         
@@ -49,7 +50,7 @@ class TransportSYNCEKernel(KernelProtocol):
             current_fine_state: Current state of the high-fidelity chain
             
         Returns:
-            Tuple of proposed states for the low-fidelity and high-fidelity chains
+            Tuple of proposed states for the low-fidelity and high-fidelity chains along with their updated current states.
         """
 
         dim = current_coarse_state.position.shape[0]
@@ -58,10 +59,12 @@ class TransportSYNCEKernel(KernelProtocol):
         coarse_theta = current_coarse_state.position
         fine_theta = current_fine_state.position
 
+        # Bring the cose sample to the reference space
         coarse_r, logdet_current_coarse = self.coarse_map.forward(coarse_theta)
+        current_coarse_state = replace(current_coarse_state, reference_position=coarse_r)
+        current_coarse_state.metadata['logdetT'] = logdet_current_coarse
 
-        # Bring the corase sample to the reference space
-        # Depending on type of couplingtype, bring it back to the right space
+        # Depending on type of couplingtype, bring the fine sample to the reference space
         if self.coupletype == 'deep':
             
             # Bring the fine sample to the coarse space
@@ -73,6 +76,8 @@ class TransportSYNCEKernel(KernelProtocol):
 
             # Bring the fine sample to the reference space
             fine_r, logdet_current_fine = self.fine_map.forward(fine_theta)
+        current_fine_state = replace(current_fine_state, reference_position=fine_r)
+        current_fine_state.metadata['logdetT'] = logdet_current_fine
 
         # Propose the common step from the standard Gaussian
         eta = sample_multivariate_gaussian(np.zeros((dim, 1)), np.eye(dim))
@@ -95,18 +100,16 @@ class TransportSYNCEKernel(KernelProtocol):
             fine_rprime = fine_r + np.linalg.cholesky(proposal_fine.cov) @ eta if hasattr(proposal_fine, 'cov') else fine_r + np.linalg.cholesky(proposal_fine.proposal.cov) @ eta
 
         # Bring the coarse sample back to the original space
-        coarse_thetaprime, logdet_proposed_coarse_temp = self.coarse_map.inverse(coarse_rprime)
-        logdet_proposed_coarse = -logdet_proposed_coarse_temp
+        coarse_thetaprime, logdet_proposed_coarse = self.coarse_map.inverse(coarse_rprime)
 
         # Bring the fine sample back to the original space
         if self.coupletype == 'deep':
             rtoc_tetaprime, logdet_rtoc_fine = self.coarse_map.inverse(fine_rprime)
             fine_thetaprime, logdet_ctof_fine = self.fine_map.inverse(rtoc_tetaprime)
-            logdet_proposed_fine = -(logdet_rtoc_fine + logdet_ctof_fine)
+            logdet_proposed_fine = logdet_rtoc_fine + logdet_ctof_fine
 
         elif self.coupletype == 'direct':
-            fine_thetaprime, logdet_proposed_fine_temp = self.fine_map.inverse(fine_rprime)
-            logdet_proposed_fine = -logdet_proposed_fine_temp
+            fine_thetaprime, logdet_proposed_fine = self.fine_map.inverse(fine_rprime)
 
         # Evaluate the low-fidelity model
         coarse_model_result = self.coarse_model(coarse_thetaprime)
@@ -115,10 +118,12 @@ class TransportSYNCEKernel(KernelProtocol):
 
         # Create new ChainState objects for the proposed states
         proposed_coarse_state = ChainState(position=coarse_thetaprime, reference_position=coarse_rprime, **coarse_model_result, metadata=current_coarse_state.metadata.copy())
+        proposed_coarse_state.metadata['logdetT'] = -logdet_proposed_coarse
 
         proposed_fine_state = ChainState(position=fine_thetaprime, reference_position=fine_rprime, **fine_model_result, metadata=current_fine_state.metadata.copy())
+        proposed_fine_state.metadata['logdetT'] = -logdet_proposed_fine
 
-        return proposed_coarse_state, proposed_fine_state
+        return proposed_coarse_state, proposed_fine_state, current_coarse_state, current_fine_state
     
     def acceptance_ratio(self, proposal_coarse: ProposalProtocol, current_coarse: ChainState, proposed_coarse: ChainState, proposal_fine: ProposalProtocol, current_fine: ChainState, proposed_fine: ChainState) -> Tuple[float, float]:
         """
@@ -136,8 +141,10 @@ class TransportSYNCEKernel(KernelProtocol):
             Tuple of acceptance ratios for the low-fidelity and high-fidelity chains
         """
         
-        coarse_r, logdet_current_coarse = self.coarse_map.forward(current_coarse.position)
-        coarse_rprime, logdet_proposed_coarse = self.coarse_map.forward(proposed_coarse.position)
+        coarse_r = current_coarse.reference_position
+        coarse_rprime = proposed_coarse.reference_position
+        logdet_current_coarse = current_coarse.metadata['logdetT']
+        logdet_proposed_coarse = proposed_coarse.metadata['logdetT']
 
         current_reference_coarse = ChainState(position=coarse_r, log_posterior=None)
         proposed_reference_coarse = ChainState(position=coarse_rprime, log_posterior=None)
@@ -151,9 +158,11 @@ class TransportSYNCEKernel(KernelProtocol):
         else:
             ar_coarse = np.exp(check_coarse)
 
-        # Implementing only direct mapping for now
-        fine_r, logdet_current_fine = self.fine_map.forward(current_fine.position)
-        fine_rprime, logdet_proposed_fine = self.fine_map.forward(proposed_fine.position)
+        fine_r = current_fine.reference_position
+        fine_rprime = proposed_fine.reference_position
+        logdet_current_fine = current_fine.metadata['logdetT']
+        logdet_proposed_fine = proposed_fine.metadata['logdetT']
+        
         current_reference_fine = ChainState(position=fine_r, log_posterior=None)
         proposed_reference_fine = ChainState(position=fine_rprime, log_posterior=None)
 

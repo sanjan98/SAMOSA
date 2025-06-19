@@ -71,8 +71,6 @@ class TransportMetropolisHastingsKernel(KernelProtocol):
             ar: Acceptance ratio
         """
 
-        # r, logdet_current = self.map.forward(current.position)
-        # rprime, logdet_proposed = self.map.forward(proposed.position)
         r = current.reference_position
         rprime = proposed.reference_position
         logdet_current = current.metadata['logdetT']

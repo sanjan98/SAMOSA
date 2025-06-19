@@ -38,7 +38,7 @@ class SYNCEKernel(KernelProtocol):
         self.w = w
         self.resync_type = resync_type
         
-    def propose(self, proposal_coarse: ProposalProtocol, proposal_fine: ProposalProtocol, current_coarse_state: ChainState, current_fine_state: ChainState) -> Tuple[ChainState, ChainState]:
+    def propose(self, proposal_coarse: ProposalProtocol, proposal_fine: ProposalProtocol, current_coarse_state: ChainState, current_fine_state: ChainState) -> Tuple[ChainState, ChainState, ChainState, ChainState]:
         """
         Generate a candidate state for both chains.
         
@@ -111,7 +111,7 @@ class SYNCEKernel(KernelProtocol):
 
         proposed_fine_state = ChainState(position=proposed_fine_position, **fine_model_result, metadata=current_fine_state.metadata.copy())
         
-        return proposed_coarse_state, proposed_fine_state
+        return proposed_coarse_state, proposed_fine_state, current_coarse_state, current_fine_state
     
     def acceptance_ratio(self, proposal_coarse: ProposalProtocol, current_coarse: ChainState, proposed_coarse: ChainState, proposal_fine: ProposalProtocol, current_fine: ChainState, proposed_fine: ChainState) -> Tuple[float, float]:
         """

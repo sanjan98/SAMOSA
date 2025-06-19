@@ -111,7 +111,7 @@ class coupledMCMCsampler:
                 print(f"Iteration {i}/{self.n_iterations}")
 
             # Propose a new state for both chains
-            proposed_coarse_state, proposed_fine_state = self.kernel.propose(self.proposal_coarse, self.proposal_fine, current_coarse_state, current_fine_state) # Metadata is copied from current_state
+            proposed_coarse_state, proposed_fine_state, current_coarse_state, current_fine_state = self.kernel.propose(self.proposal_coarse, self.proposal_fine, current_coarse_state, current_fine_state) # Metadata is copied from current_state
 
             # Compute the acceptance ratio
             ar_coarse, ar_fine = self.kernel.acceptance_ratio(self.proposal_coarse, current_coarse_state, proposed_coarse_state, self.proposal_fine, current_fine_state, proposed_fine_state)

@@ -10,56 +10,240 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.init as init
 
+from samosa.core.model import ModelProtocol
 from samosa.core.map import TransportMap
 from samosa.core.state import ChainState
-from scipy.stats import multivariate_normal
+from samosa.utils.tools import lognormpdf
 from samosa.utils.post_processing import get_position_from_states
-from typing import List
+from typing import List, Optional, Tuple
+
+def logpdf_multivariate_normal(x, mu, cov):
+    # x: (batch_size, dim)
+    mvn = torch.distributions.MultivariateNormal(loc=mu, covariance_matrix=cov)
+    return mvn.log_prob(x)
 
 class RealNVPMap(TransportMap):
     """
     Class for the RealNVP transport map using pytorch.
     """
 
-    def __init__(self, masks, hidden_dim, samples, learning_rate):
-        # realNVP = RealNVP_2D(masks, hidden_dim)
-        # if torch.cuda.device_count():
-        #     realNVP = realNVP.cuda()
-        # device = next(realNVP.parameters()).device
+    def __init__(self, dim: int, masks: List[np.ndarray], hidden_dim: int = 32, learning_rate: float = 1e-3, num_epochs: int = 100, batch_size: int = 500, adapt_start: int = 500, adapt_end: int = 1000, adapt_interval: int = 100, reference_model: Optional[ModelProtocol] = None):
+        
+        """
+        Initialize the RealNVP Normalizing flow
+        Args:
+            dim (int): Dimension of the input space.
+            masks (List[np.ndarray]): List of masks for the affine coupling layers.
+            hidden_dim (int): Hidden dimension for the neural networks in the affine coupling layers.
+            learning_rate (float): Learning rate for the optimizer.
+            num_epochs (int): Number of epochs for training.
+            batch_size (int): Batch size for training.
+            adapt_start (int): Start iteration for adaptation.
+            adapt_end (int): End iteration for adaptation.
+            adapt_interval (int): Interval for adaptation.
+            reference_model (Optional[ModelProtocol]): Reference model for the transport map, if any.
+        """
 
-        X_tensor = torch.Tensor(samples)
+        self.dim = dim
+        self.masks = masks
+        self.hidden_dim = hidden_dim
+        self.reference_model = reference_model
+        self.learning_rate = learning_rate
+        self.num_epochs = num_epochs
+        self.batch_size = batch_size
+        self.adapt_start = adapt_start
+        self.adapt_end = adapt_end
+        self.adapt_interval = adapt_interval
+        self.reference_model = reference_model
 
-        ## Create dataset and dataloader (keep same structure)
-        batch_size = 500
-        dataset = torch.utils.data.TensorDataset(X_tensor)
-        dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        # Check GPU availability and set device
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            print("Using GPU (CUDA backend)")
+        elif torch.backends.mps.is_available():
+            # For Apple Silicon Macs
+            device = torch.device("mps")
+            print("Using Apple GPU (MPS backend)")
+        else:
+            device = torch.device("cpu")
+            print("Using CPU, no GPU support available for now")
 
-        ## Initialize model on CPU
-        device = torch.device("cpu")
-        realNVP = RealNVP_2D(masks, hidden_dim).to(device)
-        optimizer = optim.Adam(realNVP.parameters(), lr=learning_rate)
+        self.device = device
 
-        ## Training loop remains similar
-        num_epochs = 100
-        print_interval = 10
+        # Default mean and std for standardization
+        self.mean = np.zeros((dim, 1))
+        self.std = np.ones((dim, 1))
 
-        for epoch in range(num_epochs):
+        self._define_map()
+
+    def forward(self, x: np.ndarray) -> Tuple[np.ndarray, float]:
+        """
+        Forward pass through the RealNVP map (Assuming target space -> reference space).
+        Args:
+            x (np.ndarray): Input data in the target space.
+        Returns:
+            Tuple[np.ndarray, float]: Transformed data in the reference space and log-determinant of the transformation.
+        """
+        # Scale the input data first
+        xscaled = (x - self.mean) / self.std
+        # Convert to torch tensor and move to device
+        x_scaled_tensor = torch.tensor(xscaled.T, dtype=torch.float32).to(self.device)
+        
+        # Evaluate the RealNVP map
+        r, logdet = self.realNVP.inverse(x_scaled_tensor)
+
+        # Convert the result back to numpy and scale it back
+        r = r.detach().cpu().numpy(); logdet = logdet.detach().cpu().numpy()
+
+        r = r.T
+        # Add the log-determinant of the scaling to the log-determinant of the transformation
+        logdet += np.log(np.prod(1 / self.std))
+
+        return r, logdet
+
+    def inverse(self, r: np.ndarray) -> Tuple[np.ndarray, float]:
+        """
+        Inverse pass through the RealNVP map (Assuming reference space -> target space).
+        Args:
+            r (np.ndarray): Input data in the reference space.
+        Returns:
+            Tuple[np.ndarray, float]: Transformed data in the target space and log-determinant of the transformation.
+        """
+        # Convert to torch tensor and move to device
+        r_tensor = torch.tensor(r.T, dtype=torch.float32).to(self.device)
+        
+        # Evaluate the RealNVP map
+        xscaled, logdet = self.realNVP.forward(r_tensor)
+
+        # Convert the result back to numpy and scale it back
+        xscaled = xscaled.detach().cpu().numpy(); logdet = logdet.detach().cpu().numpy()
+
+        xscaled = xscaled.T
+        # Scale the output data back
+        x = xscaled * self.std + self.mean
+        # Add the log-determinant of the scaling to the log-determinant of the transformation
+        logdet += np.log(np.prod(self.std))
+        
+        return x, logdet
+    
+    def adapt(self, samples: List[ChainState], force_adapt: bool = False):
+        """
+        Adapt the map to new samples.
+        
+        Args:
+            samples: New samples to adapt the map to.
+        """
+        
+        # Get current iteration
+        iteration = samples[-1].metadata['iteration'] + 1
+
+        # Only check conditions if not forcing adaptation
+        if not force_adapt:
+            # Check adaptation window
+            if iteration < self.adapt_start or iteration > self.adapt_end:
+                return None
+            
+            # Check adaptation interval
+            if (iteration - self.adapt_start) % self.adapt_interval != 0:
+                return None
+        
+        print(f"Adapting RealNVP map at iteration {iteration}")
+
+        # Get positions from states
+        positions = get_position_from_states(samples)
+
+        # Check if reference model is provided
+        if self.reference_model is None:         
+            # Standardize the positions of shape (dim, n_samples)
+            self.mean = np.mean(positions, axis=1, keepdims=True)
+            self.std = np.std(positions, axis=1, keepdims=True)
+        else:
+            self.mean = np.zeros((self.dim, 1))
+            self.std = np.ones((self.dim, 1))
+        
+        self.x = positions
+
+        # Optimize the map with the new samples
+        self._optimize_map()
+
+    def pullback(self, x):
+        """
+        Pull back the input x using the inverse map.
+        
+        Args:
+            x: Input data to be pulled back.
+        Returns:
+            Pulled back data pdf
+        """
+        
+        # Compute the forward map
+        r, logdet = self.forward(x)
+
+        if self.reference_model is None:
+            log_pullback_pdf = lognormpdf(r, np.zeros((self.dim, 1)), np.eye(self.dim)) + logdet
+        else:
+            # Convert r to torch tensor and move to device
+            r_tensor = torch.tensor(r.T, dtype=torch.float32).to(self.device)
+            # Use the reference model to compute the log pdf
+            induced_pdf_tensor = self.reference_model(r_tensor)['log_posterior']
+            # Convert the result back to numpy
+            induced_pdf = induced_pdf_tensor.detach().cpu().numpy()
+            log_pullback_pdf = induced_pdf + logdet
+            
+        pull_back_pdf = np.exp(log_pullback_pdf)
+        return pull_back_pdf
+
+    def _define_map(self):  
+        """
+        Define the realNVP map using the Affine coupling layers and the Github implementation.
+        """
+        self.realNVP = RealNVP(self.masks, self.hidden_dim).to(self.device)
+        self.optimizer = optim.Adam(self.realNVP.parameters(), lr=self.learning_rate)
+
+    def _optimize_map(self):
+        """
+        Optimize the RealNVP map using the provided samples.
+        """
+
+        # Standardize the input data
+        # I am doing this as I cannot break the computation graph for the backward pass by using the forward and inverse methods
+        # This is in contrast to the lower-traingular map where I am not using a backward pass
+        self.x = (self.x - self.mean) / self.std
+
+        # Convert x to torch tensor and move to device
+        x_tensor = torch.tensor(self.x.T, dtype=torch.float32).to(self.device)
+
+        dataset = torch.utils.data.TensorDataset(x_tensor)
+        dataloader = torch.utils.data.DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+
+        # Optimizer
+        print_interval = max(1, self.num_epochs // 10)  # Print every 10% of epochs
+        for epoch in range(self.num_epochs):
             epoch_loss = 0.0
             num_batches = 0
-            
             for batch in dataloader:
-                X = batch[0].to(device)
+                x_batch = batch[0].to(self.device)
+                # Forward pass through the RealNVP map (Dont use the forward method here as it breaks the computation graph)
+                r, logdet = self.realNVP.inverse(x_batch)
+                # Add the standardization log-determinant
+                logdet_std = -torch.sum(torch.log(torch.tensor(self.std, dtype=torch.float32))).to(self.device)
+                logdet += logdet_std
                 
-                # Forward pass through model
-                z, logdet = realNVP.inverse(X)
+                # Compute the logpdf of the reference 
+                if self.reference_model is None:
+                    mu = torch.zeros(self.dim, device=self.device, dtype=x_batch.dtype)
+                    cov = torch.eye(self.dim, device=self.device, dtype=x_batch.dtype)
+                    log_rho = logpdf_multivariate_normal(r, mu, cov)
+                else:
+                    log_rho = self.reference_model(r)['log_posterior']
                 
-                # Loss calculation (same as before)
-                loss = torch.log(z.new_tensor([2*math.pi])) + torch.mean(torch.sum(0.5*z**2, -1) - logdet)
-                
+                # Compute the loss
+                loss = -torch.mean(log_rho + logdet)
+
                 # Backpropagation
-                optimizer.zero_grad()
+                self.optimizer.zero_grad()
                 loss.backward()
-                optimizer.step()
+                self.optimizer.step()
                 
                 epoch_loss += loss.item()
                 num_batches += 1
@@ -67,11 +251,53 @@ class RealNVPMap(TransportMap):
             # Print training progress
             avg_loss = epoch_loss / num_batches
             if (epoch + 1) % print_interval == 0:
-                print(f"Epoch [{epoch+1}/{num_epochs}], Avg Loss: {avg_loss:.5f}")
+                print(f"Epoch [{epoch+1}/{self.num_epochs}], Avg Loss: {avg_loss:.5f}")
+        
+        return None  # Return None to indicate adaptation is complete
 
-        self.realNVP = realNVP    
+# ---------------------------- 
 
+class RealNVP(nn.Module):
+    '''
+    A vanilla RealNVP class
+    '''
+    
+    def __init__(self, masks, hidden_dim):
+        '''
+        initialized with a list of masks. each mask define an affine coupling layer
+        '''
+        super(RealNVP, self).__init__()        
+        self.hidden_dim = hidden_dim        
+        self.masks = nn.ParameterList(
+            [nn.Parameter(torch.Tensor(m),requires_grad = False)
+             for m in masks])
 
+        self.affine_couplings = nn.ModuleList(
+            [Affine_Coupling(self.masks[i], self.hidden_dim)
+             for i in range(len(self.masks))])
+        
+    def forward(self, x):
+        ## convert latent space variables into observed variables
+        y = x
+        logdet_tot = 0
+        for i in range(len(self.affine_couplings)):
+            y, logdet = self.affine_couplings[i](y)
+            logdet_tot = logdet_tot + logdet
+        
+        return y, logdet_tot
+
+    def inverse(self, y):
+        ## convert observed variables into latent space variables        
+        x = y        
+        logdet_tot = 0
+
+        ## inverse affine coupling layers
+        for i in range(len(self.affine_couplings)-1, -1, -1):
+            x, logdet = self.affine_couplings[i].inverse(x)
+            logdet_tot = logdet_tot + logdet
+            
+        return x, logdet_tot
+        
 class Affine_Coupling(nn.Module):
     def __init__(self, mask, hidden_dim):
         super(Affine_Coupling, self).__init__()
@@ -127,122 +353,3 @@ class Affine_Coupling(nn.Module):
         logdet = torch.sum((1 - self.mask)*(-s), -1)
         
         return x, logdet
-    
-class RealNVP_2D(nn.Module):
-    '''
-    A vanilla RealNVP class for modeling 2 dimensional distributions
-    '''
-    
-    def __init__(self, masks, hidden_dim):
-        '''
-        initialized with a list of masks. each mask define an affine coupling layer
-        '''
-        super(RealNVP_2D, self).__init__()        
-        self.hidden_dim = hidden_dim        
-        self.masks = nn.ParameterList(
-            [nn.Parameter(torch.Tensor(m),requires_grad = False)
-             for m in masks])
-
-        self.affine_couplings = nn.ModuleList(
-            [Affine_Coupling(self.masks[i], self.hidden_dim)
-             for i in range(len(self.masks))])
-        
-    def forward(self, x):
-        ## convert latent space variables into observed variables
-        y = x
-        logdet_tot = 0
-        for i in range(len(self.affine_couplings)):
-            y, logdet = self.affine_couplings[i](y)
-            logdet_tot = logdet_tot + logdet
-
-        # # a normalization layer is added such that the observed variables is within
-        # # the range of [-4, 4].
-        # logdet = torch.sum(torch.log(torch.abs(4*(1-(torch.tanh(y))**2))), -1)        
-        # y = 4*torch.tanh(y)
-        # logdet_tot = logdet_tot + logdet
-        
-        return y, logdet_tot
-
-    def inverse(self, y):
-        ## convert observed variables into latent space variables        
-        x = y        
-        logdet_tot = 0
-
-        # inverse the normalization layer
-        # logdet = torch.sum(torch.log(torch.abs(1.0/4.0* 1/(1-(x/4)**2))), -1)
-        # x  = 0.5*torch.log((1+x/4)/(1-x/4))
-        # logdet_tot = logdet_tot + logdet
-
-        ## inverse affine coupling layers
-        for i in range(len(self.affine_couplings)-1, -1, -1):
-            x, logdet = self.affine_couplings[i].inverse(x)
-            logdet_tot = logdet_tot + logdet
-            
-        return x, logdet_tot
-    
-
-
-# Map induced pdf
-def pullback_pdf(self, rho, x):
-    x = x.T
-    device = torch.device("cpu")
-    X_test_tensor = torch.Tensor(x).to(device)
-    r, logdet = self.realNVP.inverse(X_test_tensor)
-    with torch.no_grad():
-        r = r.cpu().numpy()
-        logdet = logdet.cpu().numpy()
-    log_pdf = rho(r) + logdet
-    return np.exp(log_pdf)
-
-def plot_contours(self, pdf, fname):
-    
-    n_points = 10000
-    x = np.linspace(-3, 3, int(np.sqrt(n_points)))
-    y = np.linspace(-8, 8, int(np.sqrt(n_points)))
-    X, Y = np.meshgrid(x, y)
-    grid_points = np.column_stack([X.ravel(), Y.ravel()])
-
-    # Evaluate PDFs for grid points
-    Z = np.exp(pdf(grid_points).reshape(X.shape))
-    ref_distribution = multivariate_normal(np.zeros(2),np.eye(2))  #standard normal
-    # ref_pdf_at_grid = ref_distribution.pdf(grid_points.T)
-    ref = lambda x: ref_distribution.logpdf(x)
-
-    map_induced_pdf = self.pullback_pdf(ref,grid_points.T).reshape(X.shape)
-
-    # Plotting
-    plt.figure(figsize=(12, 6))
-    plt.contour(X, Y, Z, levels=5)
-    plt.xlabel('X')
-    plt.ylabel('Y')
-    plt.contour(X, Y, map_induced_pdf, levels=5, linestyles='dashed')
-    plt.tight_layout()
-
-    # Automatically adjust xlim and ylim
-    # plt.xlim(X.min(), X.max())
-    # plt.ylim(Y.min(), Y.max())
-
-    plt.savefig(f'{fname}.png')
-    plt.close()
-
-def plot_contour_scatter(self, pdf, samples, fname):
-    
-    n_points = 10000
-    x = np.linspace(-3, 3, int(np.sqrt(n_points)))
-    y = np.linspace(-4, 8, int(np.sqrt(n_points)))
-    X, Y = np.meshgrid(x, y)
-    grid_points = np.column_stack([X.ravel(), Y.ravel()])
-
-    # Evaluate PDFs for grid points
-    Z = np.exp(pdf(grid_points).reshape(X.shape))
-
-    # Plotting
-    plt.figure(figsize=(12, 6))
-    plt.contour(X, Y, Z, levels=5, linestyles='dashed')
-    plt.scatter(samples[:, 0], samples[:, 1], s=1, alpha=0.5)
-    plt.xlabel('X')
-    plt.ylabel('Y')
-    plt.tight_layout()
-
-    plt.savefig(f'{fname}.png')
-    plt.close()

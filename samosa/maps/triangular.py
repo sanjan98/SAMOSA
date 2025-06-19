@@ -15,7 +15,7 @@ from scipy.optimize import minimize
 from scipy.stats import multivariate_normal
 from samosa.utils.post_processing import get_position_from_states
 from samosa.utils.tools import lognormpdf
-from typing import List, Optional, Any
+from typing import List, Optional
 
 class LowerTriangularMap(TransportMap):
     """
@@ -169,7 +169,6 @@ class LowerTriangularMap(TransportMap):
                 print('==================')
 
                 # Optimize for each component
-                optimizer_options = {'gtol': 1e-6, 'disp': True}
                 res = minimize(self.obj, component.CoeffMap(), args=(component, x_segment), jac=self.grad_obj, method='BFGS', options=optimizer_options)
 
                 # Print final coeffs and objective
@@ -221,12 +220,17 @@ class LowerTriangularMap(TransportMap):
 
     # Negative log likelihood objective
     def obj(self, coeffs, tri_map, x):
-        """ Evaluates the log-likelihood of the samples using the map-induced density. """
+        """ 
+        Evaluates the log-likelihood of the samples using the map-induced density. 
+        
+        *** An important note: The samples x are already standardized in the _optimize_map method, so we can stick to using the native Evaluate and LogDeterminant methods of the map. As the standardization layer is an affine map, it does not have an effect on the "optimization" of the map coefficients. ***
+        """
         num_points = x.shape[1]
         tri_map.SetCoeffs(coeffs)
 
         # Compute the map-induced density at each point
         map_of_x = tri_map.Evaluate(x)
+        log_det = tri_map.LogDeterminant(x)
 
         if self.reference_model is None:
             # Reference density
@@ -235,8 +239,6 @@ class LowerTriangularMap(TransportMap):
         else:
             # Use the reference model to compute the density
             rho_of_map_of_x = self.reference_model(map_of_x)['log_posterior']
-            
-        log_det = tri_map.LogDeterminant(x)
 
         # Return the negative log-likelihood of the entire dataset
         return -np.sum(rho_of_map_of_x + log_det)/num_points

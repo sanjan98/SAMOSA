@@ -146,7 +146,7 @@ def get_reference_position_from_states(samples: List[ChainState], burnin: Option
     # Convert to numpy array and transpose to (d, N) format
     return np.column_stack(reference_positions)
     
-def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None, maxs: Optional[np.ndarray] = None, upper_right: Optional[Any] = None, specials: Optional[Any] = None, hist_plot: Optional[bool] = True, nbins: Optional[int] = 100, img_kwargs: Optional[Dict[str, int]] = None, labels: Optional[List[str]] = None) -> Tuple[plt.Figure, List[plt.Axes], GridSpec]:
+def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None, maxs: Optional[np.ndarray] = None, upper_right: Optional[Any] = None, specials: Optional[Any] = None, hist_plot: Optional[bool] = True, nbins: Optional[int] = 100, img_kwargs: Optional[Dict[str, int]] = None, labels: Optional[List[str]] = None, sample_labels: Optional[List[str]] = None) -> Tuple[plt.Figure, List[plt.Axes], GridSpec]:
 
     """
     Create a nice scatter plot matrix of the samples.
@@ -172,6 +172,8 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
         Dictionary containing image parameters such as label_fontsize, title_fontsize, tick_fontsize, legend_fontsize, and img_format.
     labels : list of str, optional
         List of labels for each dimension. If None, they will be set to '\theta_1', '\theta_2', etc.
+    sample_labels : list of str, optional
+        List of labels for each sample chain. If None, they will be set to 'Chain 1', 'Chain 2', etc.
 
     Returns
     -------
@@ -358,8 +360,9 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
 
                 if hist_plot:
                     ax.contour(X, Y, Z, levels=5, cmap=cmap, linewidths=1.0)
+                    ax.plot(samples[kk][ii, :], samples[kk][jj, :], 'o', ms=1, alpha=0.01, color=colors[kk % len(colors)], label=sample_labels[kk] if sample_labels is not None else f'Chain {kk+1}')
                 else:
-                    ax.plot(samples[kk][ii, :], samples[kk][jj, :], 'o', ms=1, alpha=0.2, color=colors[kk % len(colors)])
+                    ax.plot(samples[kk][ii, :], samples[kk][jj, :], 'o', ms=1, alpha=0.2, color=colors[kk % len(colors)], label=sample_labels[kk] if sample_labels is not None else f'Chain {kk+1}')
                     
             if specials is not None:
                 for special in specials:
@@ -367,6 +370,11 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
                         ax.plot(special['vals'][ii], special['vals'][jj], 'x', color=special['color'], ms=2, mew=2)
                     else:
                         ax.plot(special['vals'][ii], special['vals'][jj], 'x', ms=2, mew=2)
+
+            if jj == ii + 1:
+                leg = ax.legend(loc='best', fontsize=img_kwargs['legend_fontsize'], markerscale=6)
+                for lh in leg.legend_handles:
+                    lh.set_alpha(1)
 
             ax.set_xlim((use_mins[ii], use_maxs[ii]))
             ax.set_ylim((use_mins[jj] - 1e-10, use_maxs[jj] + 1e-10))
