@@ -272,7 +272,8 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
         end = dim + 1
         l = dim + 1
 
-    means = [np.mean(np.concatenate([samples[kk][ii, :] for kk in range(nchains)])) for ii in range(dim)]
+    # means = [np.mean(np.concatenate([samples[kk][ii, :] for kk in range(nchains)])) for ii in range(dim)]
+    means = np.array([[np.mean(samples[kk][ii, :]) for ii in range(dim)] for kk in range(nchains)])
 
     def one_decimal(x, pos):
         return f'{x:.1f}'
@@ -302,6 +303,8 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
             x_grid = np.linspace(use_mins[ii], use_maxs[ii], 1000)
             ax.fill_between(x_grid, 0, kde(x_grid), color=colors[kk % len(colors)], alpha=0.3)
             ax.plot(x_grid, kde(x_grid), color=colors[kk % len(colors)], alpha=0.7)
+            # Plot vertical line for mean of this chain and dimension
+            ax.axvline(means[kk, ii], color=colors[kk % len(colors)], linestyle='--', lw=2)
 
         ax.set_xlim((use_mins[ii], use_maxs[ii]))
         ax.set_ylim(0)  # Start the y-axis at zero for alignment with lower plots
@@ -314,7 +317,7 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
                     else:
                         ax.axvline(special['vals'][ii], lw=2)
 
-        ax.axvline(means[ii], color='red', linestyle='--', lw=2, label=f'Mean: {means[ii]:.2f}')
+        # ax.axvline(means[ii], color='red', linestyle='--', lw=2, label=f'Mean: {means[ii]:.2f}')
         ax.set_xlim((use_mins[ii] - 1e-10, use_maxs[ii] + 1e-10))
 
         diff = 0.2 * (use_maxs[ii] - use_mins[ii])
@@ -363,7 +366,6 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
                     ax.plot(samples[kk][ii, :], samples[kk][jj, :], 'o', ms=1, alpha=0.01, color=colors[kk % len(colors)], label=sample_labels[kk] if sample_labels is not None else f'Chain {kk+1}')
                 else:
                     ax.plot(samples[kk][ii, :], samples[kk][jj, :], 'o', ms=1, alpha=0.2, color=colors[kk % len(colors)], label=sample_labels[kk] if sample_labels is not None else f'Chain {kk+1}')
-                    
             if specials is not None:
                 for special in specials:
                     if 'color' in special:
