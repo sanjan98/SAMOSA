@@ -74,6 +74,9 @@ class RealNVPMap(TransportMap):
         self.mean = np.zeros((dim, 1))
         self.std = np.ones((dim, 1))
 
+        # Add a loss attribute to track the loss during training
+        self.losses = []
+
         self._define_map()
 
     def forward(self, x: np.ndarray) -> Tuple[np.ndarray, float]:
@@ -160,12 +163,18 @@ class RealNVPMap(TransportMap):
         else:
             self.mean = np.zeros((self.dim, 1))
             self.std = np.ones((self.dim, 1))
+
+        if force_adapt:
+            # Use all positions for adaptation
+            self.x = positions
+            self._optimize_map_forceadapt()
+            return None 
+        else:
+            # Use the last adapt_interval samples for adaptation
+            self.x = positions[-self.adapt_interval:]  
+            self._optimize_map()
+            return None 
         
-        self.x = positions
-
-        # Optimize the map with the new samples
-        self._optimize_map()
-
     def pullback(self, x):
         """
         Pull back the input x using the inverse map.
@@ -199,10 +208,12 @@ class RealNVPMap(TransportMap):
         """
         self.realNVP = RealNVP(self.masks, self.hidden_dim).to(self.device)
         self.optimizer = optim.Adam(self.realNVP.parameters(), lr=self.learning_rate)
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=10)
 
-    def _optimize_map(self):
+    def _optimize_map_forceadapt(self):
         """
         Optimize the RealNVP map using the provided samples.
+        Force adaptation - use all samples for training.
         """
 
         # Standardize the input data
@@ -252,6 +263,49 @@ class RealNVPMap(TransportMap):
             avg_loss = epoch_loss / num_batches
             if (epoch + 1) % print_interval == 0:
                 print(f"Epoch [{epoch+1}/{self.num_epochs}], Avg Loss: {avg_loss:.5f}")
+        
+        # Store the loss for analysis
+        self.losses.append(avg_loss)
+        
+        return None  # Return None to indicate adaptation is complete
+    
+    def _optimize_map(self):
+        """
+        Optimize the RealNVP map using the provided samples.
+        Step optimization - use the last adapt_interval samples for training.
+        """
+
+        # Standardize the input data
+        # I am doing this as I cannot break the computation graph for the backward pass by using the forward and inverse methods
+        # This is in contrast to the lower-traingular map where I am not using a backward pass
+        self.x = (self.x - self.mean) / self.std
+
+        # Convert x to torch tensor and move to device
+        x_tensor = torch.tensor(self.x.T, dtype=torch.float32).to(self.device)
+
+        # One optimizer step on new data
+        self.optimizer.zero_grad()
+        r, logdet = self.realNVP.inverse(x_tensor)
+        # Add the standardization log-determinant
+        logdet_std = -torch.sum(torch.log(torch.tensor(self.std, dtype=torch.float32))).to(self.device)
+        logdet += logdet_std
+        
+        # Compute the logpdf of the reference 
+        if self.reference_model is None:
+            mu = torch.zeros(self.dim, device=self.device, dtype=x_tensor.dtype)
+            cov = torch.eye(self.dim, device=self.device, dtype=x_tensor.dtype)
+            log_rho = logpdf_multivariate_normal(r, mu, cov)
+        else:
+            log_rho = self.reference_model(r)['log_posterior']
+        
+        # Compute the loss
+        loss = -torch.mean(log_rho + logdet)
+
+        loss.backward()
+        self.optimizer.step()
+        # Store the loss for analysis
+        self.losses.append(loss.item())
+        print('Adaptation step completed with loss:', loss.item())
         
         return None  # Return None to indicate adaptation is complete
 
