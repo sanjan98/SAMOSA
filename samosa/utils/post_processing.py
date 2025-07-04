@@ -580,14 +580,13 @@ def plot_lag(samples: np.ndarray, maxlag: Optional[int] = 500, step: Optional[in
 
     markers = ['o', 's', 'D', '^', 'v', '<', '>', 'p', '*', 'h', 'H', '+', 'x', 'd', '|', '_']
 
-    lags, autolag = autocorrelation(samples, maxlag=maxlag,step=step)
-    ess = []
+    autos, taus, ess = autocorrelation(samples)
     dim = samples.shape[0]
     fig, axs = plt.subplots(1, 1, figsize=(8, 6), sharex=True)
 
+    lags = np.arange(1, maxlag + 1, step)
     for i in range(dim):
-        ess.append(effective_sample_size(autolag[i, :]))
-        axs.plot(lags, autolag[i, :], markers[i], label=f'{labels[i]}, ess = {ess[i]:0.2f}', alpha=0.7, markersize=7, linewidth=4)
+        axs.plot(lags, autos[i, :maxlag], markers[i], label=f'{labels[i]}', alpha=0.7, markersize=7, linewidth=4)
     axs.set_ylabel(f'Autocorrelation')
     # Set the xlabel for the last subplot (shared x-axis)
     axs.set_xlabel('Lag')
@@ -610,19 +609,54 @@ def plot_lag(samples: np.ndarray, maxlag: Optional[int] = 500, step: Optional[in
         for label in (axs.get_xticklabels() + axs.get_yticklabels() + [axs.xaxis.label, axs.yaxis.label]):
             label.set_color('black')
 
-    return fig, axs
+    return fig, axs, ess, taus
 
-def autocorrelation(samples: np.ndarray, maxlag: Optional[int] = 100, step: Optional[int] = 1) -> Tuple[np.ndarray, np.ndarray]:
+def next_pow_two(n):
+    i = 1
+    while i < n:
+        i = i << 1
+    return i
+
+def function_1d(x):
+    """
+    FFT-based autocorrelation function, normalized
+    """
+    x = np.atleast_1d(x)
+    n = next_pow_two(len(x))
+    x_mean = np.mean(x)
+    f = np.fft.fft(x - x_mean, n=2 * n)
+    acf = np.fft.ifft(f * np.conjugate(f))[: len(x)].real
+    acf /= acf[0]
+    return acf
+
+def auto_window(taus, c):
+    """
+    Windowing as in emcee: stop at first lag where lag < c * tau
+    """
+    
+    m = np.arange(len(taus)) < c * taus
+    if np.any(m):
+        return np.argmin(m)
+    return len(taus) - 1
+
+def autocorrelation(samples: np.ndarray, c: Optional[int] = 5, tol: Optional[int] = 50) -> Tuple[np.ndarray, np.ndarray]:
     """Compute the correlation of a set of samples
+    New implementation based on emcee's autocorrelation function.
+    
+    Estimate the integrated autocorrelation time of a time series.
+
+    This estimate uses the iterative procedure described on page 16 of
+    `Sokal's notes <https://www.semanticscholar.org/paper/Monte-Carlo-Methods-in-Statistical-Mechanics%3A-and-Sokal/0bfe9e3db30605fe2d4d26e1a288a5e2997e7225>`_ to
+    determine a reasonable window size.
     
     Parameters
     ----------
     samples : np.ndarray
         The samples to compute the autocorrelation for. Should be of shape (n_dim, n_samples).
-    maxlag : int
-        The maximum lag to compute the autocorrelation for.
-    step : int
-        The step size for the lag. Default is 1.
+    c : int
+        The step size for window search
+    tol : int
+        The minimum number of autocorrelation times needed to trust the estimate.
 
     Returns
     -------
@@ -640,48 +674,31 @@ def autocorrelation(samples: np.ndarray, maxlag: Optional[int] = 100, step: Opti
     if samples.shape[0] > samples.shape[1]:
         raise ValueError("Samples should be in the format (d, N), where d is the number of dimensions and N is the number of samples.")
     
-    # Compute the mean
-    mean = np.mean(samples, axis=1)
+    autos = np.empty((ndim, nsamples))
+    taus = np.empty(ndim)
+    windows = np.empty(ndim, dtype=int)
+
+    for d in range(ndim):
+        acf = function_1d(samples[d])
+        autos[d, :] = acf
+        tau_seq = 2.0 * np.cumsum(acf) - 1.0
+        window = auto_window(tau_seq, c)
+        taus[d] = tau_seq[window]
+        windows[d] = window
+
+    # Check convergence
+    flag = tol * taus > nsamples
+
+    # Warn or raise in the case of non-convergence
+    if np.any(flag):
+        msg = (
+            "The chain is shorter than {0} times the integrated "
+            "autocorrelation time for {1} parameter(s). Use this estimate "
+            "with caution and run a longer chain!\n"
+        ).format(tol, np.sum(flag))
+        msg += "N/{0} = {1:.0f};\ntau: {2}".format(tol, nsamples / tol, taus)
     
-    # Compute the denominator, which is variance
-    denominator = np.zeros((ndim))
-    for ii in range(nsamples):
-        denominator = denominator + (samples[:, ii] - mean)**2
-    
-    lags = np.arange(0, maxlag, step)
-    autos = np.zeros((ndim, len(lags)))
+    ess = np.ceil(nsamples / taus)
 
-    for zz, lag in enumerate(lags):
-        autos[:, zz] = np.zeros((ndim))
-        # compute the covariance between all samples *lag apart*
-        for ii in range(nsamples - lag):
-            autos[:, zz] = autos[:, zz] + (samples[:, ii] - mean) * (samples[:, ii + lag] - mean)
-        autos[:, zz] = autos[:, zz] / denominator
-
-    return lags, autos
-
-def effective_sample_size(auto_corrs: np.ndarray) -> float:
-    """
-    Estimate the effective sample size for an array of samples.
-    Parameters
-    ----------
-    auto_corrs : np.ndarray
-        The autocorrelation values for which to compute the effective sample size.
-    
-    Returns
-    -------
-    ess : float
-        The effective sample size.
-    """
-    n = len(auto_corrs)
-
-    # Sum the sequence of autocorrelations
-    negative_autocorr = auto_corrs[auto_corrs < 0]
-    if len(negative_autocorr) > 0:  # truncate the sum at first negative autocorrelation
-        first_negative = np.where(auto_corrs < 0)[0][0]
-    else:
-        first_negative = len(auto_corrs)
-
-    ess = n / (1 + 2 * np.sum(auto_corrs[:first_negative]))
-    return ess
+    return autos, taus, ess
 
