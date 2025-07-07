@@ -24,7 +24,7 @@ class Normalizingflow(TransportMap):
     Class for the RealNVP transport map using pytorch.
     """
 
-    def __init__(self, dim: int, flows: List, learning_rate: float = 1e-3, num_epochs: int = 100, batch_size: int = 500, adapt_start: int = 500, adapt_end: int = 1000, adapt_interval: int = 100, reference_model: Optional[ModelProtocol] = None):
+    def __init__(self, dim: int, flows: List, learning_rate: float = 1e-3, num_epochs: int = 100, batch_size: int = 500, adapt_start: int = 500, adapt_end: int = 1000, adapt_interval: int = 100, reference_model: Optional[ModelProtocol] = None, force_cpu: Optional[bool] = True):
         
         """
         Initialize the RealNVP Normalizing flow
@@ -58,23 +58,22 @@ class Normalizingflow(TransportMap):
 
         self.q0 = q0
 
-        # Check GPU availability and set device
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-            print("Using GPU (CUDA backend)")
-        elif torch.backends.mps.is_available():
-            # For Apple Silicon Macs
-            device = torch.device("mps")
-            print("Using Apple GPU (MPS backend)")
+        if force_cpu is True:
+            device = torch.device("cpu")
+            print("Forcing CPU usage")
         else:
-            device = torch.device("cpu")
-            print("Using CPU, no GPU support available for now")
-
-        force_cpu = True  # Force CPU for now, as normflows does not support MPS backend
-        if force_cpu:
-            device = torch.device("cpu")
-            print("Forcing CPU usage, as normflows does not support MPS backend")
-
+            # Check GPU availability and set device
+            if torch.cuda.is_available():
+                device = torch.device("cuda")
+                print("Using GPU (CUDA backend)")
+            elif torch.backends.mps.is_available():
+                # For Apple Silicon Macs
+                device = torch.device("mps")
+                print("Using Apple GPU (MPS backend)")
+            else:
+                device = torch.device("cpu")
+                print("Using CPU, no GPU support available for now")
+            
         self.device = device
 
         # Default mean and std for standardization
