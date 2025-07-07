@@ -133,9 +133,16 @@ class MCMCsampler:
                     pickle.dump(samples, f)
                 print(f"Saved samples at iteration {i} to {output_dir}/samples_{i}.pkl")
 
+                if hasattr(self.kernel, 'save_map'):
+                    self.kernel.save_map(output_dir, i)
+
         # Save the samples to a file
         with open(f"{output_dir}/samples.pkl", "wb") as f:
             pickle.dump(samples, f)
+
+        # Save the final map if applicable
+        if hasattr(self.kernel, 'save_map'):
+            self.kernel.save_map(output_dir, self.n_iterations)
         
         # Save the acceptance rate
         if self.start_iteration > 1:

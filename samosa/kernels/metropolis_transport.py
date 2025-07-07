@@ -119,5 +119,22 @@ class TransportMetropolisHastingsKernel(KernelProtocol):
         """
         if hasattr(self.map, 'adapt'):
             self.map.adapt(samples)
+        
+        return None
+
+    def save_map(self, output_dir: str, iteration: int) -> None:
+        """
+        Save the transport map to a file.
+
+        Parameters:
+            output_dir: Directory to save the map
+            iteration: Current iteration number
+        Returns:
+            None
+        """
+        if hasattr(self.map, 'checkpoint_model'):
+            self.map.checkpoint_model(f'{output_dir}/map_{iteration}')
+        
+        return None
 
     

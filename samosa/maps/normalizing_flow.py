@@ -54,9 +54,6 @@ class Normalizingflow(TransportMap):
             # If no reference model is provided, we use a standard Gaussian distribution
             q0 = nf.distributions.DiagGaussian(self.dim)
         else:
-            # If a reference model is provided, check if it is a valid model, then use it
-            if not check_reference_model(self.reference_model):
-                raise ValueError("Reference model is not a valid ModelProtocol instance.")
             q0 = reference_model
 
         self.q0 = q0
@@ -72,6 +69,11 @@ class Normalizingflow(TransportMap):
         else:
             device = torch.device("cpu")
             print("Using CPU, no GPU support available for now")
+
+        force_cpu = True  # Force CPU for now, as normflows does not support MPS backend
+        if force_cpu:
+            device = torch.device("cpu")
+            print("Forcing CPU usage, as normflows does not support MPS backend")
 
         self.device = device
 
@@ -208,7 +210,7 @@ class Normalizingflow(TransportMap):
             # Convert r to torch tensor and move to device
             r_tensor = torch.tensor(r.T, dtype=torch.float32).to(self.device)
             # Use the reference model to compute the log pdf
-            induced_pdf_tensor = self.reference_model(r_tensor)['log_prob']
+            induced_pdf_tensor = self.reference_model.log_prob(r_tensor)
             # Convert the result back to numpy
             induced_pdf = induced_pdf_tensor.detach().cpu().numpy()
             log_pullback_pdf = induced_pdf + logdet
@@ -233,6 +235,11 @@ class Normalizingflow(TransportMap):
         dataset = torch.utils.data.TensorDataset(x_tensor)
         dataloader = torch.utils.data.DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
 
+        # Training loop with early stopping
+        best_loss = float('inf')
+        patience = 50
+        patience_counter = 0
+
         # Optimizer
         print_interval = max(1, self.num_epochs // 10)  # Print every 10% of epochs
         for epoch in range(self.num_epochs):
@@ -242,10 +249,21 @@ class Normalizingflow(TransportMap):
                 self.optimizer.zero_grad()
 
                 x_batch = batch[0].to(self.device)
-                loss = self.nfm.forward_kld(x_batch) # Remember that we are ignoring the logdet term of the affine standardization layer as it is not dependent on the parameters of the NF
+
+                # Add noise for regularization
+                noise = torch.randn_like(x_batch) * 0.01
+                x_batch_noisy = x_batch + noise
+
+                loss = self.nfm.forward_kld(x_batch_noisy) # Remember that we are ignoring the logdet term of the affine standardization layer as it is not dependent on the parameters of the NF
                 
+                l2_reg = sum(p.pow(2.0).sum() for p in self.nfm.parameters())
+                loss += 1e-6 * l2_reg
+
                 # Backpropagation
                 loss.backward()
+
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(self.nfm.parameters(), 1.0)
                 self.optimizer.step()
                 
                 epoch_loss += loss.item()
@@ -253,11 +271,26 @@ class Normalizingflow(TransportMap):
             
             # Print training progress
             avg_loss = epoch_loss / num_batches
+
+            # Update learning rate
+            self.scheduler.step(avg_loss)
+            
+            # Early stopping
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                
+            if patience_counter >= patience:
+                print(f"Early stopping at epoch {epoch+1}")
+                break
+
             if (epoch + 1) % print_interval == 0:
                 print(f"Epoch [{epoch+1}/{self.num_epochs}], Avg Loss: {avg_loss:.5f}")
         
         # Store the loss for analysis
-        self.losses.append(avg_loss)
+        self.losses.append(best_loss)
         
         return None  # Return None to indicate adaptation is complete
     
@@ -280,6 +313,8 @@ class Normalizingflow(TransportMap):
         loss = self.nfm.forward_kld(x_tensor) # Remember that we are ignoring the logdet term of the affine standardization layer as it is not dependent on the parameters of the NF
         loss.backward()
         self.optimizer.step()
+        # Update the learning rate
+        self.scheduler.step(loss.item())
         # Store the loss for analysis
         self.losses.append(loss.item())
         print('Adaptation step completed with loss:', loss.item())
@@ -299,13 +334,59 @@ class Normalizingflow(TransportMap):
         ax.legend()
 
         return fig, ax
+    
+    def checkpoint_model(self, filepath: str):
+        """
+        Save only the normalizing flow model for later plotting/analysis
+        
+        Args:
+            filepath: Path to save the model (use .pth extension)
+        """
+
+        filepath = filepath + '.pth'  
+
+        model_data = {
+            'model_state_dict': self.nfm.state_dict(),
+            'mean': self.mean,
+            'std': self.std,
+            'dim': self.dim,
+            'flows_config': self.flows  # Optional: save flow architecture info
+        }
+    
+        torch.save(model_data, filepath)
+        print(f"Model saved to {filepath}")
+
+    def load_model(self, filepath: str):
+        """
+        Load the normalizing flow model from a checkpoint file.
+        
+        Args:
+            filepath: Path to the checkpoint file (use .pth extension)
+        """
+
+        filepath = filepath + '.pth'
+
+        model_data = torch.load(filepath, map_location=self.device)
+        
+        # Load the model state
+        self.nfm.load_state_dict(model_data['model_state_dict'])
+        
+        # Load mean and std
+        self.mean = model_data['mean']
+        self.std = model_data['std']
+        self.dim = model_data['dim']
+        
+        # Optionally load flow architecture info
+        self.flows = model_data.get('flows_config', [])
+        
+        print(f"Model loaded from {filepath}")
 
 # ------------------
 
 def check_reference_model(ref_model: Any) -> bool:
     
     # Check if ref_model is an instance of torch.nn.Module
-    if not isinstance(ref_model, nn.Module):
+    if not isinstance(ref_model, nf.distributions.BaseDistribution):
         raise TypeError("Reference model must be a subclass of torch.nn.Module")
     
     # Check if it has a callable 'log_prob' method

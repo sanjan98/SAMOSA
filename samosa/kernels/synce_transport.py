@@ -215,3 +215,21 @@ class TransportSYNCEKernel(KernelProtocol):
         self.coarse_map.adapt(samples_coarse)
         self.fine_map.adapt(samples_fine)
         return None
+    
+    def save_maps(self, output_dir: str, iteration: int) -> None:
+        """
+        Save the transport maps to the specified directory.
+
+        Parameters:
+            fname: File path to save the transport maps
+
+        Returns:
+            None
+        """
+        
+        if hasattr(self.coarse_map, 'checkpoint_model'):
+            self.coarse_map.checkpoint_model(f'{output_dir}/coarse_map_{iteration}')
+        if hasattr(self.fine_map, 'checkpoint_model'):
+            self.fine_map.checkpoint_model(f'{output_dir}/fine_map_{iteration}')
+
+        return None

@@ -22,7 +22,7 @@ class LowerTriangularMap(TransportMap):
     Class for the lower triangular map using MParT.
     """
 
-    def __init__(self, dim: int, total_order: int = 2, adapt_start: int = 500, adapt_end: int = 1000, adapt_interval: int = 100, reference_model: Optional[ModelProtocol] = None):
+    def __init__(self, dim: int, total_order: int = 2, adapt_start: int = 500, adapt_end: int = 1000, adapt_interval: int = 100, reference_model: Optional[ModelProtocol] = None, grad_reference_model: Optional[ModelProtocol] = None):
         
         """
         Initialize the lower triangular map.
@@ -41,6 +41,7 @@ class LowerTriangularMap(TransportMap):
         self.adapt_end = adapt_end
         self.adapt_interval = adapt_interval
         self.reference_model = reference_model
+        self.grad_reference_model = grad_reference_model
 
         # Set some default values for mean and std
         self.mean = np.zeros((dim, 1))
@@ -99,7 +100,7 @@ class LowerTriangularMap(TransportMap):
         # Only check conditions if not forcing adaptation
         if not force_adapt:
             # Check adaptation window
-            if iteration < self.adapt_start or iteration > self.adapt_end:
+            if iteration < self.adapt_start or iteration >= self.adapt_end:
                 return None
             
             # Check adaptation interval
@@ -188,8 +189,12 @@ class LowerTriangularMap(TransportMap):
             print(f'Objective value (reference model case): {self.obj(self.ttm.CoeffMap(), self.ttm, self.x):.2E}')
             print('==================')
 
-            res = minimize(self.obj, self.ttm.CoeffMap(), args=(self.ttm, self.x), method='BFGS', options=optimizer_options)
-            
+            if self.grad_reference_model is not None:
+                res = minimize(self.obj, self.ttm.CoeffMap(), args=(self.ttm, self.x), jac=self.grad_obj, method='BFGS', options=optimizer_options)
+            else:
+                # If no gradient reference model is provided, use the default gradient computation
+                res = minimize(self.obj, self.ttm.CoeffMap(), args=(self.ttm, self.x), method='BFGS', options=optimizer_options)
+
             # Print final coefficients and objective
             print('==================')
             print('Final coeffs (reference model case):')
@@ -217,6 +222,63 @@ class LowerTriangularMap(TransportMap):
             log_pullback_pdf = self.reference_model(r)['log_posterior'] + logdet
         pull_back_pdf = np.exp(log_pullback_pdf)
         return pull_back_pdf
+    
+    def checkpoint_model(self, filepath: str):
+        """
+        Save only the lower triangular map for later plotting/analysis
+        
+        Args:
+            filepath: Path to save the model (use .pkl extension)
+        """
+        import pickle
+        
+        filepath = filepath + '.pkl'
+        
+        model_data = {
+            'map_coefficients': self.ttm.CoeffMap(),
+            'component_coeffs': [comp.CoeffMap() for comp in self.comps],
+            'mean': self.mean,
+            'std': self.std,
+            'dim': self.dim,
+            'total_order': self.total_order
+        }
+        
+        with open(filepath, 'wb') as f:
+            pickle.dump(model_data, f)
+        
+        print(f"Model saved to {filepath}")
+
+    def load_model(self, filepath: str):
+        """
+        Load the lower triangular map from a checkpoint file.
+        
+        Args:
+            filepath: Path to the checkpoint file (use .pkl extension)
+        """
+        import pickle
+
+        filepath = filepath + '.pkl'
+        
+        with open(filepath, 'rb') as f:
+            model_data = pickle.load(f)
+        
+        # Load basic parameters
+        self.mean = model_data['mean']
+        self.std = model_data['std']
+        self.dim = model_data['dim']
+        self.total_order = model_data['total_order']
+        
+        # Recreate the map structure if needed
+        self._define_map()
+        
+        # Load coefficients
+        self.ttm.SetCoeffs(model_data['map_coefficients'])
+        
+        # Load individual component coefficients
+        for comp, coeffs in zip(self.comps, model_data['component_coeffs']):
+            comp.SetCoeffs(coeffs)
+        
+        print(f"Model loaded from {filepath}")
 
     # Negative log likelihood objective
     def obj(self, coeffs, tri_map, x):
@@ -243,8 +305,7 @@ class LowerTriangularMap(TransportMap):
         # Return the negative log-likelihood of the entire dataset
         return -np.sum(rho_of_map_of_x + log_det)/num_points
 
-    @staticmethod
-    def grad_obj(coeffs, tri_map, x):
+    def grad_obj(self, coeffs, tri_map, x):
         """ Returns the gradient of the log-likelihood objective wrt the map parameters. """
         num_points = x.shape[1]
         tri_map.SetCoeffs(coeffs)
@@ -252,9 +313,17 @@ class LowerTriangularMap(TransportMap):
         # Evaluate the map
         map_of_x = tri_map.Evaluate(x)
 
-        # Now compute the inner product of the map jacobian (\nabla_w S) and the gradient (which is just -S(x) here)
-        grad_rho_of_map_of_x = tri_map.CoeffGrad(x, -map_of_x)
-
+        if self.reference_model is None:
+            # Now compute the inner product of the map jacobian (\nabla_w S) and the gradient (which is just -S(x) here)
+            grad_rho_of_map_of_x = tri_map.CoeffGrad(x, -map_of_x)
+        else:
+            if self.grad_reference_model is not None:
+                # Use the reference model to compute the gradient of the log pdf
+                grad_log_posterior = self.grad_reference_model(map_of_x)
+                grad_rho_of_map_of_x = tri_map.CoeffGrad(x, grad_log_posterior)
+            else:
+                grad_rho_of_map_of_x = tri_map.CoeffGrad(x, -map_of_x)
+        
         # Get the gradient of the log determinant with respect to the map coefficients
         grad_log_det = tri_map.LogDeterminantCoeffGrad(x)
 

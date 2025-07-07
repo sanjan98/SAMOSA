@@ -203,20 +203,12 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
     # Set some default values for img_kwargs if not provided
     if img_kwargs is None:
         img_kwargs = {
-            'label_fontsize': 18,
+            'label_fontsize': 24,
             'title_fontsize': 20,
-            'tick_fontsize': 16,
-            'legend_fontsize': 16,
+            'tick_fontsize': 20,
+            'legend_fontsize': 24,
             'img_format': 'png'
         }
-
-    plt.rcParams.update({
-    'axes.labelsize': img_kwargs['label_fontsize'],
-    'axes.titlesize': img_kwargs['title_fontsize'],
-    'xtick.labelsize': img_kwargs['tick_fontsize'],
-    'ytick.labelsize': img_kwargs['tick_fontsize'],
-    'legend.fontsize': img_kwargs['legend_fontsize']
-    })
 
     # Set some default labels if none are provided
     if labels is None:
@@ -272,7 +264,6 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
         end = dim + 1
         l = dim + 1
 
-    # means = [np.mean(np.concatenate([samples[kk][ii, :] for kk in range(nchains)])) for ii in range(dim)]
     means = np.array([[np.mean(samples[kk][ii, :]) for ii in range(dim)] for kk in range(nchains)])
 
     def one_decimal(x, pos):
@@ -291,7 +282,7 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
         else:
             ax.tick_params(axis='x', bottom=True, top=False, labelbottom=True)
             if labels:
-                ax.set_xlabel(labels[ii])
+                ax.set_xlabel(labels[ii], fontsize=img_kwargs['label_fontsize'])
 
         ax.tick_params(axis='y', left=False, right=False, labelleft=False)
         ax.set_frame_on(False)
@@ -327,6 +318,7 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
             yticks = np.linspace(yticks[0], yticks[-1], 2)
         ax.set_xticks(xticks)
         ax.set_yticks(yticks)
+        ax.tick_params(axis='both', labelsize=img_kwargs['tick_fontsize'])
 
         ax.xaxis.set_major_formatter(formatter)
         ax.yaxis.set_major_formatter(formatter)
@@ -335,20 +327,20 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
             axs[jj * l + ii] = fig.add_subplot(gs[jj + start, ii])
             ax = axs[jj * l + ii]
 
-            ax.grid(False)  # Disable gridlines on the joint plots
+            ax.grid(False) 
 
             if jj < dim - 1:
                 ax.tick_params(axis='x', bottom=False, top=False, labelbottom=False)
             else:
                 ax.tick_params(axis='x', bottom=True, top=False, labelbottom=True)
                 if labels:
-                    ax.set_xlabel(labels[ii])
+                    ax.set_xlabel(labels[ii], fontsize=img_kwargs['label_fontsize'])
             if ii > 0:
                 ax.tick_params(axis='y', left=False, right=False, labelleft=False)
             else:
                 ax.tick_params(axis='y', left=True, right=False, labelleft=True)
                 if labels:
-                    ax.set_ylabel(labels[jj])
+                    ax.set_ylabel(labels[jj], fontsize=img_kwargs['label_fontsize'])
 
             ax.set_frame_on(True)
 
@@ -373,11 +365,6 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
                     else:
                         ax.plot(special['vals'][ii], special['vals'][jj], 'x', ms=2, mew=2)
 
-            if jj == ii + 1:
-                leg = ax.legend(loc='best', fontsize=img_kwargs['legend_fontsize'], markerscale=6)
-                for lh in leg.legend_handles:
-                    lh.set_alpha(1)
-
             ax.set_xlim((use_mins[ii], use_maxs[ii]))
             ax.set_ylim((use_mins[jj] - 1e-10, use_maxs[jj] + 1e-10))
 
@@ -386,6 +373,7 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
             yticks = np.linspace(use_mins[jj] + diff, use_maxs[jj] - diff, 2)
             ax.set_xticks(xticks)
             ax.set_yticks(yticks)
+            ax.tick_params(axis='both', labelsize=img_kwargs['tick_fontsize'])
 
             ax.xaxis.set_major_formatter(formatter)
             ax.yaxis.set_major_formatter(formatter)
@@ -423,7 +411,7 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
         ax.tick_params(axis='x', bottom='both', top=False, labelbottom=True)
         ax.tick_params(axis='y', left='both', right=False, labelleft=False)
         ax.set_frame_on(True)
-        ax.set_xlabel(name)
+        ax.set_xlabel(name, fontsize=img_kwargs['label_fontsize'])
 
         diff = 0.2 * (ra[1] - ra[0])
         xticks = np.linspace(ra[0] + diff, ra[1] - diff, 2)
@@ -432,9 +420,26 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
             yticks = np.linspace(yticks[0], yticks[-1], 2)
         ax.set_xticks(xticks)
         ax.set_yticks(yticks)
+        ax.tick_params(axis='both', labelsize=img_kwargs['tick_fontsize'])
 
         ax.xaxis.set_major_formatter(formatter)
         ax.yaxis.set_major_formatter(formatter)
+    
+    if sample_labels is not None:
+        # Place the legend in the upper right whitespace
+        # [left, bottom, width, height] in figure coordinates; adjust as needed
+        left=0.6; bottom=0.7; width=0.20
+        nlabels = len(sample_labels)
+        # Dynamically set the height based on number of labels
+        height = max(0.08, min(0.04 * nlabels, 0.25))  # min and max for reasonable bounds
+        legend_ax = fig.add_axes([left, bottom, width, height])
+        legend_ax.axis('off')
+        handles = []
+        for kk in range(nchains):
+            color = colors[kk % len(colors)]
+            handles.append(plt.Line2D([0], [0], marker='o', color='w',
+                                    label=sample_labels[kk], markerfacecolor=color, markersize=10))
+        legend_ax.legend(handles=handles, loc='center', frameon=False, fontsize=img_kwargs['legend_fontsize'])
 
     plt.subplots_adjust(left=0.15, right=0.95)
 

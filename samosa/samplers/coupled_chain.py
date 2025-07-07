@@ -151,12 +151,20 @@ class coupledMCMCsampler:
                     pickle.dump(samples_fine, f)
                 print(f"Saved samples at iteration {i} to {output_dir}/samples_{i}.pkl")
 
+                # Save the transport map if applicable
+                if hasattr(self.kernel, 'save_maps'):
+                    self.kernel.save_maps(output_dir, i)
+
         # Save the samples to a file
         with open(f"{output_dir}/samples_coarse.pkl", "wb") as f:
             pickle.dump(samples_coarse, f)
 
         with open(f"{output_dir}/samples_fine.pkl", "wb") as f:
             pickle.dump(samples_fine, f)
+
+        # Save the final map if applicable
+        if hasattr(self.kernel, 'save_maps'):
+            self.kernel.save_maps(output_dir, self.n_iterations)
         
         # Save the acceptance rate
         if self.start_iteration > 1:

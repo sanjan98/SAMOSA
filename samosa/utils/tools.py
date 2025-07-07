@@ -7,7 +7,8 @@ import numpy as np
 import scipy
 from typing import Callable, Optional
 
-def lognormpdf(x: np.ndarray, mean: np.ndarray, cov: np.ndarray) -> np.ndarray:
+def lognormpdf(x: np.ndarray, mean: Optional[np.ndarray] = None, cov: Optional[np.ndarray] = None) -> np.ndarray:
+
     """Compute log pdf of a multivariate Normal distribution.
     
     Inputs
@@ -30,6 +31,13 @@ def lognormpdf(x: np.ndarray, mean: np.ndarray, cov: np.ndarray) -> np.ndarray:
         x = np.array([[x]], dtype=float)
     elif isinstance(x, np.ndarray) and x.ndim == 1:
         x = x[:, np.newaxis]  # shape (d, N)
+    
+    d, N = x.shape
+
+    if mean is None:
+        mean = np.zeros((d, 1), dtype=float)
+    if cov is None:
+        cov = np.eye(d, dtype=float)
         
     if np.isscalar(mean):
         mean = np.array([mean], dtype=float)
@@ -40,8 +48,6 @@ def lognormpdf(x: np.ndarray, mean: np.ndarray, cov: np.ndarray) -> np.ndarray:
         cov = np.array([[cov]], dtype=float)
     else:
         cov = np.asarray(cov)
-    
-    d, N = x.shape
     
     # Precompute normalization term
     det = np.linalg.det(cov)
