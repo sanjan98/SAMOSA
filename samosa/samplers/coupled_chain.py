@@ -47,10 +47,17 @@ class coupledMCMCsampler:
         if self.restart_coarse is not None:
             self.initial_state_coarse = self.restart_coarse[-1]
             self.start_iteration = self.restart_coarse[-1].metadata['iteration'] + 1
+            
+            # Add a check here to reset mean and covariance for the reference space
+            if self.initial_state_coarse.reference_position is None and hasattr(self.kernel, 'coarse_map'):
+                self.initial_state_coarse.metadata['mean'] = self.kernel.coarse_map.forward(self.initial_state_coarse.position)[0] 
+                self.initial_state_coarse.metadata['covariance'] = proposal_coarse.sigma if hasattr(proposal_coarse, 'sigma') else proposal_coarse.proposal.sigma
+                self.initial_state_coarse.metadata['lambda'] = 2.4**2 / dim
+
         else:
             self.initial_state_coarse = ChainState(position=initial_position_coarse, **self.coarse_model(initial_position_coarse), metadata={
                 'covariance': proposal_coarse.sigma if hasattr(proposal_coarse, 'sigma') else proposal_coarse.proposal.sigma,
-                'mean': initial_position_coarse,
+                'mean': self.kernel.coarse_map.forward(initial_position_coarse)[0] if hasattr(self.kernel, 'coarse_map') else initial_position_coarse, 
                 'lambda': 2.4**2 / dim,
                 'acceptance_probability': 0.0,
                 'iteration': 1
@@ -59,10 +66,17 @@ class coupledMCMCsampler:
 
         if self.restart_fine is not None:
             self.initial_state_fine = self.restart_fine[-1]
+
+            # Add a check here to reset mean and covariance for the reference space
+            if self.initial_state_fine.reference_position is None and hasattr(self.kernel, 'fine_map'):
+                self.initial_state_fine.metadata['mean'] = self.kernel.fine_map.forward(self.initial_state_fine.position)[0]
+                self.initial_state_fine.metadata['covariance'] = proposal_fine.sigma if hasattr(proposal_fine, 'sigma') else proposal_fine.proposal.sigma
+                self.initial_state_fine.metadata['lambda'] = 2.4**2 / dim
+
         else:    
             self.initial_state_fine = ChainState(position=initial_position_fine, **self.fine_model(initial_position_fine), metadata={
                 'covariance': proposal_fine.sigma if hasattr(proposal_fine, 'sigma') else proposal_fine.proposal.sigma,
-                'mean': initial_position_fine,
+                'mean': self.kernel.fine_map.forward(initial_position_fine)[0] if hasattr(self.kernel, 'fine_map') else initial_position_fine,
                 'lambda': 2.4**2 / dim,
                 'acceptance_probability': 0.0,
                 'iteration': 1

@@ -59,7 +59,7 @@ class TransportSYNCEKernel(KernelProtocol):
         coarse_theta = current_coarse_state.position
         fine_theta = current_fine_state.position
 
-        # Bring the cose sample to the reference space
+        # Bring the coarse sample to the reference space
         coarse_r, logdet_current_coarse = self.coarse_map.forward(coarse_theta)
         current_coarse_state = replace(current_coarse_state, reference_position=coarse_r)
         current_coarse_state.metadata['logdetT'] = logdet_current_coarse
