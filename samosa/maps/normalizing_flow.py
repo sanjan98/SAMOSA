@@ -90,8 +90,6 @@ class Normalizingflow(TransportMap):
         Define the map according to normflow's convention. Also add initialization of the optimizer and scheduler.
         """
         self.nfm = nf.NormalizingFlow(q0=self.q0, flows=self.flows).to(self.device)
-        self.optimizer = optim.Adam(self.nfm.parameters(), lr=self.learning_rate)
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=10)
 
     def forward(self, x: np.ndarray) -> Tuple[np.ndarray, float]:
         """
@@ -186,7 +184,10 @@ class Normalizingflow(TransportMap):
             return None 
         else:
             # Use the last adapt_interval samples for adaptation
-            self.x = positions[-self.adapt_interval:]  
+            # indices = np.random.choice(positions.shape[1], size=self.adapt_interval, replace=False)
+            # self.x = positions[:, indices]
+            self.x = positions[-self.adapt_interval:] 
+            # self.x = positions 
             self._optimize_map()
             return None 
         
@@ -223,6 +224,11 @@ class Normalizingflow(TransportMap):
         Force adaptation - use all samples for training.
         """
 
+        # Define the optimizer, new one every time we adapt
+        optimizer = optim.Adam(self.nfm.parameters(), lr=self.learning_rate)
+        scheduler = None
+        # scheduler = optim.lr_scheduler.ExponentialLR(optimizer,gamma=0.75)
+
         # Standardize the input data
         # I am doing this as I cannot break the computation graph for the backward pass by using the forward and inverse methods
         # This is in contrast to the lower-traingular map where I am not using a backward pass
@@ -245,7 +251,7 @@ class Normalizingflow(TransportMap):
             epoch_loss = 0.0
             num_batches = 0
             for batch in dataloader:
-                self.optimizer.zero_grad()
+                optimizer.zero_grad()
 
                 x_batch = batch[0].to(self.device)
 
@@ -263,16 +269,13 @@ class Normalizingflow(TransportMap):
 
                 # Gradient clipping
                 torch.nn.utils.clip_grad_norm_(self.nfm.parameters(), 1.0)
-                self.optimizer.step()
+                optimizer.step()
                 
                 epoch_loss += loss.item()
                 num_batches += 1
             
             # Print training progress
             avg_loss = epoch_loss / num_batches
-
-            # Update learning rate
-            self.scheduler.step(avg_loss)
             
             # Early stopping
             if avg_loss < best_loss:
@@ -286,7 +289,11 @@ class Normalizingflow(TransportMap):
                 break
 
             if (epoch + 1) % print_interval == 0:
-                print(f"Epoch [{epoch+1}/{self.num_epochs}], Avg Loss: {avg_loss:.5f}")
+                print(f"Epoch [{epoch+1}/{self.num_epochs}], Avg Loss: {avg_loss:.5f} Learning rate: {optimizer.param_groups[0]['lr']:.5f}")
+                
+                # Update learning rate
+                if scheduler is not None:
+                    scheduler.step()
         
         # Store the loss for analysis
         self.losses.append(best_loss)
@@ -299,6 +306,9 @@ class Normalizingflow(TransportMap):
         Step optimization - use the last adapt_interval samples for training.
         """
 
+        optimizer = optim.Adam(self.nfm.parameters(), lr=self.learning_rate)
+        scheduler = None
+
         # Standardize the input data
         # I am doing this as I cannot break the computation graph for the backward pass by using the forward and inverse methods
         # This is in contrast to the lower-traingular map where I am not using a backward pass
@@ -308,12 +318,21 @@ class Normalizingflow(TransportMap):
         x_tensor = torch.tensor(self.x.T, dtype=torch.float32).to(self.device)
 
         # One optimizer step on new data
-        self.optimizer.zero_grad()
-        loss = self.nfm.forward_kld(x_tensor) # Remember that we are ignoring the logdet term of the affine standardization layer as it is not dependent on the parameters of the NF
+        optimizer.zero_grad()
+        # Add noise for regularization
+        noise = torch.randn_like(x_tensor) * 0.01
+        x_batch_noisy = x_tensor + noise
+
+        loss = self.nfm.forward_kld(x_batch_noisy) # Remember that we are ignoring the logdet term of the affine standardization layer as it is not dependent on the parameters of the NF
+        
+        l2_reg = sum(p.pow(2.0).sum() for p in self.nfm.parameters())
+        loss += 1e-6 * l2_reg
+
         loss.backward()
-        self.optimizer.step()
+        optimizer.step()
         # Update the learning rate
-        self.scheduler.step(loss.item())
+        if scheduler is not None:
+            scheduler.step()
         # Store the loss for analysis
         self.losses.append(loss.item())
         print('Adaptation step completed with loss:', loss.item())
