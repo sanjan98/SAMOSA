@@ -521,8 +521,8 @@ def joint_plots(samples: List[np.ndarray], img_kwargs: Optional[Dict[str, int]] 
         
         ticks_x = np.linspace(x_min, x_max, 4)
         ticks_y = np.linspace(y_min, y_max, 4)
-        g.ax_joint.set_xticks(ticks_x)
-        g.ax_joint.set_yticks(ticks_y)
+        g.ax_joint.set_xticks([round(tick, 2) for tick in ticks_x])
+        g.ax_joint.set_yticks([round(tick, 2) for tick in ticks_y])
         
         g.ax_joint.grid(False)
         g.ax_joint.spines['top'].set_color('black')
@@ -540,7 +540,7 @@ def joint_plots(samples: List[np.ndarray], img_kwargs: Optional[Dict[str, int]] 
         else:
             for label in (g.ax_joint.get_xticklabels() + g.ax_joint.get_yticklabels() + [g.ax_joint.xaxis.label, g.ax_joint.yaxis.label]):
                 label.set_color('black')
-        
+
         figures.append(g.figure)
 
     return figures
