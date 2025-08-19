@@ -445,6 +445,106 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
 
     return fig, axs, gs
 
+def joint_plots(samples: List[np.ndarray], img_kwargs: Optional[Dict[str, int]] = None, labels: Optional[List[str]] = None, bins: int = 30) -> List[plt.Figure]:
+
+    """
+    Create joint plots for pairs of dimensions (e.g., consecutive samples or different chains).
+
+    Parameters
+    ----------
+    samples : list of np.ndarray
+        List of samples from different chains or levels. Each sample is a 2D array with shape (n_dim, n_samples).
+    img_kwargs : dict, optional
+        Dictionary containing image parameters.
+    labels : list of str, optional
+        List of labels for each dimension.
+    bins : int, optional
+        Number of bins for marginal histograms.
+        
+    Returns
+    -------
+    figures : list of matplotlib.figure.Figurexs
+        List of figure objects for each joint plot.
+    """
+
+    # Validation
+    if len(samples) != 2:
+        raise ValueError("Need 2 samples for pairwise plotting.")
+
+    dim, nsamples = samples[0].shape
+
+    # Set defaults
+    if img_kwargs is None:
+        img_kwargs = {
+            'label_fontsize': 24,
+            'title_fontsize': 20,
+            'tick_fontsize': 20,
+            'legend_fontsize': 16,
+            'img_format': 'png'
+        }
+
+    if labels is None:
+        labels = [rf'$\theta_{ii+1}$' for ii in range(dim)]
+
+    # Set style
+    sns.set_style("white")
+    sns.set_context("talk")
+    plt.rc('text', usetex=True)
+    plt.rc('font', family='serif')
+
+    plt.rcParams.update({
+        'axes.labelsize': img_kwargs['label_fontsize'],
+        'axes.titlesize': img_kwargs['title_fontsize'],
+        'xtick.labelsize': img_kwargs['tick_fontsize'],
+        'ytick.labelsize': img_kwargs['tick_fontsize'],
+        'legend.fontsize': img_kwargs['legend_fontsize']
+    })
+
+    figures = []
+
+    # Create joint plots for each dimension, comparing consecutive samples
+    for dd in range(dim):
+                
+        x = samples[0][dd, :]
+        y = samples[1][dd, :]
+        
+        # Create joint plot using seaborn
+        g = sns.jointplot(x=x, y=y, kind='scatter', marginal_kws=dict(bins=bins, fill=True), alpha=0.6, s=30, linewidth=0)
+        g.figure.set_size_inches((8, 8))
+        
+        # Set labels
+        g.set_axis_labels(f'{labels[dd]} - coarse', f'{labels[dd]} - fine')
+        
+        # Adjust tick parameters
+        x_min, x_max = x.min(), x.max()
+        y_min, y_max = y.min(), y.max()
+        
+        ticks_x = np.linspace(x_min, x_max, 4)
+        ticks_y = np.linspace(y_min, y_max, 4)
+        g.ax_joint.set_xticks(ticks_x)
+        g.ax_joint.set_yticks(ticks_y)
+        
+        g.ax_joint.grid(False)
+        g.ax_joint.spines['top'].set_color('black')
+        g.ax_joint.spines['top'].set_linewidth(2)
+        g.ax_joint.spines['right'].set_color('black')
+        g.ax_joint.spines['right'].set_linewidth(2)
+        g.ax_joint.spines['bottom'].set_color('black')
+        g.ax_joint.spines['bottom'].set_linewidth(2)
+        g.ax_joint.spines['left'].set_color('black')
+        g.ax_joint.spines['left'].set_linewidth(2)
+
+        if g.ax_joint.get_legend() is not None:
+            for label in (g.ax_joint.get_xticklabels() + g.ax_joint.get_yticklabels() + g.ax_joint.get_legend().get_texts() + [g.ax_joint.xaxis.label, g.ax_joint.yaxis.label]):
+                label.set_color('black')
+        else:
+            for label in (g.ax_joint.get_xticklabels() + g.ax_joint.get_yticklabels() + [g.ax_joint.xaxis.label, g.ax_joint.yaxis.label]):
+                label.set_color('black')
+        
+        figures.append(g.figure)
+
+    return figures
+
 def plot_trace(samples: np.ndarray, img_kwargs: Optional[Dict] = None, labels: Optional[List] = None) -> Tuple[plt.Figure, List[plt.Axes]]:
     """
     Plot the trace of the samples.
