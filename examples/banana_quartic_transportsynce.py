@@ -126,7 +126,7 @@ plt.close(fig)
 kernel = TransportSYNCEKernel(model_coarse, model_fine, map_coarse, map_fine)
 
 # Define the sampler
-sampler = coupledMCMCsampler(model_coarse, model_fine, kernel, proposal, proposal, initial_position_coarse=np.zeros((2, 1)), initial_position_fine=np.zeros((2, 1)), n_iterations=50000, print_iteration=1000, save_iteration=60000) 
+sampler = coupledMCMCsampler(kernel, proposal, proposal, initial_position_coarse=np.zeros((2, 1)), initial_position_fine=np.zeros((2, 1)), n_iterations=50000, print_iteration=1000, save_iteration=60000) 
 ar1, ar2 = sampler.run('examples/banana_quartic_transportsynce')
 
 print("Acceptance rate:", ar1)

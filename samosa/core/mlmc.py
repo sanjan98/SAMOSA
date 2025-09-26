@@ -64,18 +64,12 @@ class SimpleMLMCWrapper:
     Distributes different levels across MPI processes without adaptive allocation.
     """
 
-    def __init__(
-        self,
-        levels: List[MLMCLevel],
-        output_dir: Optional[str] = "./mlmc_output",
-        print_progress: Optional[bool] = True,
-    ):
+    def __init__(self, levels: List[MLMCLevel], output_dir: Optional[str] = "./mlmc_output", print_progress: Optional[bool] = True):
         """
         Initialize simple MLMC wrapper.
 
         Args:
             levels: List of MLMC level configurations
-            qoi_function: Function to compute quantity of interest from chain states
             output_dir: Directory for output files
             print_progress: Whether to print progress information
         """
@@ -99,10 +93,103 @@ class SimpleMLMCWrapper:
                 print(f"MLMC Setup: {len(self.levels)} levels, {self.size} MPI processes")
         self.comm.Barrier()
 
-    def _default_qoi(self, state: ChainState) -> np.ndarray:
-        """Default QoI is just the parameter values"""
-        return state.position.flatten()
+    def run(self) -> Optional[MLMCResults]:
+        """
+        Run the ML-MCMC sampling routine with specified samples per level and specified coupling kernel.
 
+        Returns:
+            MLMCResults object on rank 0, None on other ranks
+        """
+        if self.rank == 0 and self.print_progress:
+            print("Starting MLMC sampling...")
+            print(f"Total samples: {[level.n_samples for level in self.levels]}")
+
+        # Distribute levels across processes
+        my_levels = self._distribute_levels()
+
+        # Sample assigned levels
+        local_results = {}
+
+        for level_idx in my_levels:
+            level = self.levels[level_idx]
+
+            if self.print_progress:
+                print(f"Process {self.rank}: Starting level {level.level}")
+
+            samples_coarse, samples_fine, comp_time = self._sample_level(level)
+            mean_diff, variance = self._compute_qoi_differences(samples_coarse, samples_fine)
+
+            local_results[level_idx] = {
+                "level": level.level,
+                "mean": mean_diff,
+                "variance": variance,
+                "n_samples": level.n_samples,
+                "computation_time": comp_time,
+            }
+
+            if self.print_progress:
+                print(f"Process {self.rank}: Completed level {level.level} in {comp_time:.2f}s")
+
+        # Gather results from all processes
+        all_results = self.comm.gather(local_results, root=0)
+
+        # Combine and return results on root process
+        if self.rank == 0:
+            # Combine results from all processes
+            combined_results = {}
+            for proc_results in all_results:
+                combined_results.update(proc_results)
+
+            # Sort by level
+            sorted_levels = sorted(combined_results.keys())
+
+            # Extract arrays
+            level_means = [combined_results[i]["mean"] for i in sorted_levels]
+            level_variances = [combined_results[i]["variance"] for i in sorted_levels]
+            samples_per_level = [combined_results[i]["n_samples"] for i in sorted_levels]
+            computation_times = [combined_results[i]["computation_time"] for i in sorted_levels]
+            levels_completed = [combined_results[i]["level"] for i in sorted_levels]
+
+            # Compute MLMC estimator
+            mlmc_expectation = sum(level_means)
+            mlmc_variance = sum(var / n_samples for var, n_samples in zip(level_variances, samples_per_level))
+
+            # Create results object
+            results = MLMCResults(
+                level_means=level_means,
+                level_variances=level_variances,
+                mlmc_expectation=mlmc_expectation,
+                mlmc_variance=mlmc_variance,
+                samples_per_level=samples_per_level,
+                computation_times=computation_times,
+                levels_completed=levels_completed,
+            )
+
+            # Save results
+            with open(f"{self.output_dir}/mlmc_results.pkl", "wb") as f:
+                pickle.dump(results, f)
+
+            if self.print_progress:
+                print("\n" + "=" * 50)
+                print("MLMC SAMPLING COMPLETE")
+                print("=" * 50)
+                print(f"Levels completed: {levels_completed}")
+                print(f"Samples per level: {samples_per_level}")
+                print(f"Total computation time: {sum(computation_times):.2f}s")
+                print(f"MLMC expectation shape: {mlmc_expectation.shape}")
+                print(f"MLMC variance shape: {mlmc_variance.shape}")
+                print(f"Results saved to: {self.output_dir}/mlmc_results.pkl")
+                print("=" * 50)
+
+            return results
+
+        return None
+
+    def load_results(self) -> MLMCResults:
+        """Load results from saved file"""
+        with open(f"{self.output_dir}/mlmc_results.pkl", "rb") as f:
+            return pickle.load(f)
+        
     def _validate_levels(self):
         """Validate the MLMC level configuration"""
         # Check that level 0 has no coarse model
@@ -232,103 +319,6 @@ class SimpleMLMCWrapper:
                 print(f"  Process {rank}: levels {rank_levels}")
 
         return my_levels
-
-    def run(self) -> Optional[MLMCResults]:
-        """
-        Run the MLMC sampling with specified samples per level.
-
-        Returns:
-            MLMCResults object on rank 0, None on other ranks
-        """
-        if self.rank == 0 and self.print_progress:
-            print("Starting MLMC sampling...")
-            print(f"Total samples: {[level.n_samples for level in self.levels]}")
-
-        # Distribute levels across processes
-        my_levels = self._distribute_levels()
-
-        # Sample assigned levels
-        local_results = {}
-
-        for level_idx in my_levels:
-            level = self.levels[level_idx]
-
-            if self.print_progress:
-                print(f"Process {self.rank}: Starting level {level.level}")
-
-            samples_coarse, samples_fine, comp_time = self._sample_level(level)
-            mean_diff, variance = self._compute_qoi_differences(samples_coarse, samples_fine)
-
-            local_results[level_idx] = {
-                "level": level.level,
-                "mean": mean_diff,
-                "variance": variance,
-                "n_samples": level.n_samples,
-                "computation_time": comp_time,
-            }
-
-            if self.print_progress:
-                print(f"Process {self.rank}: Completed level {level.level} in {comp_time:.2f}s")
-
-        # Gather results from all processes
-        all_results = self.comm.gather(local_results, root=0)
-
-        # Combine and return results on root process
-        if self.rank == 0:
-            # Combine results from all processes
-            combined_results = {}
-            for proc_results in all_results:
-                combined_results.update(proc_results)
-
-            # Sort by level
-            sorted_levels = sorted(combined_results.keys())
-
-            # Extract arrays
-            level_means = [combined_results[i]["mean"] for i in sorted_levels]
-            level_variances = [combined_results[i]["variance"] for i in sorted_levels]
-            samples_per_level = [combined_results[i]["n_samples"] for i in sorted_levels]
-            computation_times = [combined_results[i]["computation_time"] for i in sorted_levels]
-            levels_completed = [combined_results[i]["level"] for i in sorted_levels]
-
-            # Compute MLMC estimator
-            mlmc_expectation = sum(level_means)
-            mlmc_variance = sum(var / n_samples for var, n_samples in zip(level_variances, samples_per_level))
-
-            # Create results object
-            results = MLMCResults(
-                level_means=level_means,
-                level_variances=level_variances,
-                mlmc_expectation=mlmc_expectation,
-                mlmc_variance=mlmc_variance,
-                samples_per_level=samples_per_level,
-                computation_times=computation_times,
-                levels_completed=levels_completed,
-            )
-
-            # Save results
-            with open(f"{self.output_dir}/mlmc_results.pkl", "wb") as f:
-                pickle.dump(results, f)
-
-            if self.print_progress:
-                print("\n" + "=" * 50)
-                print("MLMC SAMPLING COMPLETE")
-                print("=" * 50)
-                print(f"Levels completed: {levels_completed}")
-                print(f"Samples per level: {samples_per_level}")
-                print(f"Total computation time: {sum(computation_times):.2f}s")
-                print(f"MLMC expectation shape: {mlmc_expectation.shape}")
-                print(f"MLMC variance shape: {mlmc_variance.shape}")
-                print(f"Results saved to: {self.output_dir}/mlmc_results.pkl")
-                print("=" * 50)
-
-            return results
-
-        return None
-
-    def load_results(self) -> MLMCResults:
-        """Load results from saved file"""
-        with open(f"{self.output_dir}/mlmc_results.pkl", "rb") as f:
-            return pickle.load(f)
 
 
 # Utility function for easy setup

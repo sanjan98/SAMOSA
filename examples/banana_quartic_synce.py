@@ -138,7 +138,7 @@ kernel = SYNCEKernel(model_coarse, model_fine, w=0.5, resync_type='lot')
 # restart_coarse, restart_fine = load_coupled_samples('examples/banana_quartic_synce', iteration=20000)
 
 # Define the sampler
-sampler = coupledMCMCsampler(model_coarse, model_fine, kernel, adaptive_proposal, adaptive_proposal, initial_position_coarse=np.zeros((2, 1)), initial_position_fine=np.zeros((2, 1)), n_iterations=50000, print_iteration=1000, save_iteration=10000)#, restart_coarse=restart_coarse, restart_fine=restart_fine) 
+sampler = coupledMCMCsampler(kernel, adaptive_proposal, adaptive_proposal, initial_position_coarse=np.zeros((2, 1)), initial_position_fine=np.zeros((2, 1)), n_iterations=50000, print_iteration=1000, save_iteration=10000)#, restart_coarse=restart_coarse, restart_fine=restart_fine) 
 ar1, ar2 = sampler.run('examples/banana_quartic_synce')
 
 print("Acceptance rate:", ar1)

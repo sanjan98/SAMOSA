@@ -74,7 +74,7 @@ proposal = GaussianRandomWalk(mu=np.zeros((2,1)), sigma=0.5*np.eye(2))
 output = 'examples/banana-transport-mpart'
 
 # Define the sampler
-sampler = MCMCsampler(model, kernel, proposal, initial_position=samples[-1].position, n_iterations=50000, save_iteraton=100000, restart=samples)
+sampler = MCMCsampler(kernel, proposal, initial_position=samples[-1].position, n_iterations=50000, save_iteraton=100000, restart=samples)
 ar2 = sampler.run(output)
 print("Acceptance rate:", ar2)
 
