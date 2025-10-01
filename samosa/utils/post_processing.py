@@ -14,7 +14,7 @@ from scipy.stats import gaussian_kde
 
 from samosa.core.state import ChainState
 
-from typing import List, Any, Optional, Dict, Tuple
+from typing import List, Any, Optional, Dict, Tuple, Union
 
 def load_samples(output_dir: str, iteration: int = None) -> List[ChainState]:
     """
@@ -545,12 +545,12 @@ def joint_plots(samples: List[np.ndarray], img_kwargs: Optional[Dict[str, int]] 
 
     return figures
 
-def plot_trace(samples: np.ndarray, img_kwargs: Optional[Dict] = None, labels: Optional[List] = None) -> Tuple[plt.Figure, List[plt.Axes]]:
+def plot_trace(samples: Union[np.ndarray, List[np.ndarray]], img_kwargs: Optional[Dict] = None, labels: Optional[List] = None, sample_labels: Optional[List[str]] = None) -> Tuple[plt.Figure, List[plt.Axes]]:
     """
     Plot the trace of the samples.
     Parameters
     ----------
-    samples : np.ndarray
+    samples : np.ndarray or list of np.ndarray
         The samples to plot. Should be of shape (n_dim, n_samples).
     img_kwargs : dict, optional
         Dictionary containing image parameters such as label_fontsize, title_fontsize, tick_fontsize, legend_fontsize, and img_format.
@@ -565,12 +565,20 @@ def plot_trace(samples: np.ndarray, img_kwargs: Optional[Dict] = None, labels: O
         The axes object for the trace plot.
     """
 
-    # Check if the samples are in the correct format
-    if not isinstance(samples, np.ndarray) or samples.ndim != 2:
-        raise ValueError("Samples should be a 2D numpy array.")
-    if samples.shape[0] > samples.shape[1]:
-        raise ValueError("Samples should be in the format (d, N), where d is the number of dimensions and N is the number of samples.")
+    # If samples is a single numpy array, convert it to a list
+    if isinstance(samples, np.ndarray):
+        samples = [samples]
 
+    # Check if the samples are in the correct format
+    if not isinstance(samples, list) or len(samples) == 0:
+        raise ValueError("Samples should be a numpy array or non empty list of numoy arrays.")
+    
+    for i, samp in enumerate(samples):
+        if not isinstance(samp, np.ndarray) or samp.ndim != 2:
+            raise ValueError(f"Sample {i} should be a 2D numpy array.")
+        if samp.shape[0] > samp.shape[1]:
+            raise ValueError(f"Sample {i} should be in the format (d, N), where d is the number of dimensions and N is the number of samples.")
+    
     # Set some default values for img_kwargs if not provided
     if img_kwargs is None:
         img_kwargs = {
@@ -587,8 +595,16 @@ def plot_trace(samples: np.ndarray, img_kwargs: Optional[Dict] = None, labels: O
     'ytick.labelsize': img_kwargs['tick_fontsize'],
     'legend.fontsize': img_kwargs['legend_fontsize']
     })
+
+    dim = samples[0].shape[0]
+
     if labels is None:
-        labels = [rf'$\theta_{ii+1}$' for ii in range(samples.shape[1])]
+        labels = [rf'$\theta_{ii+1}$' for ii in range(dim)]
+
+    if sample_labels is None and len(samples) > 1:
+        sample_labels = [f'Chain {i+1}' for i in range(len(samples))]
+    elif sample_labels is None:
+        sample_labels = [None]
  
     sns.set_style("white")
     sns.set_context("talk")
@@ -596,17 +612,26 @@ def plot_trace(samples: np.ndarray, img_kwargs: Optional[Dict] = None, labels: O
     plt.rc('text', usetex=True)
     plt.rc('font', family='serif')
 
-    dim = samples.shape[0]
+    # Get default color palette
+    colors = sns.color_palette("tab10")
 
     fig, axs = plt.subplots(dim, 1, figsize=(16,8), sharex=True)
+    
     if dim == 1:
         axs = [axs]  # Ensure axs is a list when dim=1
+    
     for i in range(dim):
-        axs[i].plot(samples[i, :], alpha=0.3)
-        axs[i].set_ylabel(f'{labels[i]}')
-        
-    axs[dim-1].set_xlabel('Sample Number')
+        for j, samp in enumerate(samples):
+            label = sample_labels[j] if j < len(sample_labels) else None
+            axs[i].plot(samp[i, :], alpha=0.6, color=colors[j % len(colors)], linewidth=0.8, label=label)
 
+        axs[i].set_ylabel(f'{labels[i]}')
+
+        if i == 0 and len(samples) > 1:
+            axs[i].legend(loc='upper right', frameon=True, fancybox=True, shadow=True)
+
+    axs[dim-1].set_xlabel('Sample Number')   
+        
     for i in range(dim):
         axs[i].grid(False)
         axs[i].spines['top'].set_color('black')
@@ -624,15 +649,16 @@ def plot_trace(samples: np.ndarray, img_kwargs: Optional[Dict] = None, labels: O
         else:
             for label in (axs[i].get_xticklabels() + axs[i].get_yticklabels() + [axs[i].xaxis.label, axs[i].yaxis.label]):
                 label.set_color('black')
+        plt.tight_layout()
 
     return fig, axs
 
-def plot_lag(samples: np.ndarray, maxlag: Optional[int] = 500, step: Optional[int] = 1, img_kwargs: Optional[Dict[str, int]] = None, labels: Optional[List[str]] = None) -> Tuple[plt.Figure, List[plt.Axes]]:
+def plot_lag(samples: Union[np.ndarray, List[np.ndarray]], maxlag: Optional[int] = 500, step: Optional[int] = 1, img_kwargs: Optional[Dict[str, int]] = None, labels: Optional[List[str]] = None, sample_labels: Optional[List[str]] = None) -> Tuple[plt.Figure, List[plt.Axes]]:
     """
     Plot the autocorrelation of the samples.
     Parameters
     ----------
-    samples : np.ndarray
+    samples : np.ndarray or list of np.ndarray
         The samples to plot. Should be of shape (n_dim, n_samples).
     maxlag : int, optional
         The maximum lag to compute the autocorrelation for. Default is 500.
@@ -651,12 +677,14 @@ def plot_lag(samples: np.ndarray, maxlag: Optional[int] = 500, step: Optional[in
         List of axes objects for each subplot.
     """
 
-    # Check if the samples are in the correct format
-    if not isinstance(samples, np.ndarray) or samples.ndim != 2:
-        raise ValueError("Samples should be a 2D numpy array.")
-    if samples.shape[0] > samples.shape[1]:
-        raise ValueError("Samples should be in the format (d, N), where d is the number of dimensions and N is the number of samples.")
-    
+    # Convert single array to list for uniform handling
+    if isinstance(samples, np.ndarray):
+        samples = [samples]
+
+    # Validate samples
+    if not isinstance(samples, list) or len(samples) == 0:
+        raise ValueError("Samples should be a numpy array or a non-empty list of numpy arrays.")
+
     # Set some default values for img_kwargs if not provided
     if img_kwargs is None:
         img_kwargs = {
@@ -676,26 +704,59 @@ def plot_lag(samples: np.ndarray, maxlag: Optional[int] = 500, step: Optional[in
         'legend.fontsize': img_kwargs['legend_fontsize']
     })
 
+    # Compute autocorrelation for all sample sets
+    all_autos = []
+    all_taus = []
+    all_ess = []
+    
+    for samp in samples:
+        autos, taus, ess = autocorrelation(samp)
+        all_autos.append(autos)
+        all_taus.append(taus)
+        all_ess.append(ess)
+
     if labels is None:
-        labels = [rf'$\theta_{ii+1}$' for ii in range(samples.shape[1])]
+        labels = [rf'$\theta_{ii+1}$' for ii in range(samples[0].shape[0])]
+
+    if sample_labels is None and len(samples) > 1:
+        sample_labels = [f'Chain {i+1}' for i in range(len(samples))]
+    elif sample_labels is None:
+        sample_labels = [None]
 
     # Set the style of the visualization
     sns.set_style("whitegrid")
     sns.set_context("talk", font_scale=1.3)
 
     markers = ['o', 's', 'D', '^', 'v', '<', '>', 'p', '*', 'h', 'H', '+', 'x', 'd', '|', '_']
+    colors = sns.color_palette("tab10")
 
-    autos, taus, ess = autocorrelation(samples)
-    dim = samples.shape[0]
+    dim = samples[0].shape[0]
     fig, axs = plt.subplots(1, 1, figsize=(8, 6), sharex=True)
 
     lags = np.arange(1, maxlag + 1, step)
     for i in range(dim):
-        axs.plot(lags, autos[i, :maxlag], markers[i], label=f'{labels[i]}', alpha=0.7, markersize=7, linewidth=4)
-    axs.set_ylabel(f'Autocorrelation')
-    # Set the xlabel for the last subplot (shared x-axis)
+        for j, autos in enumerate(all_autos):
+            marker = markers[i % len(markers)]
+            color = colors[(i * len(samples) + j) % len(colors)]
+            
+            # Create label combining dimension and sample labels
+            if len(samples) > 1 and sample_labels[j] is not None:
+                label = f'{labels[i]} ({sample_labels[j]})'
+            else:
+                label = f'{labels[i]}'
+            
+            axs.plot(lags, autos[i, :maxlag], marker, label=label, alpha=0.2, 
+                    markersize=7, linewidth=4, color=color)
+    
+    axs.set_ylabel('Autocorrelation')
     axs.set_xlabel('Lag')
-    axs.legend()
+    
+    # Position legend outside plot area if many entries
+    num_legend_entries = dim * len(samples)
+    if num_legend_entries > 6:
+        axs.legend(bbox_to_anchor=(1.05, 1), loc='upper left', frameon=True)
+    else:
+        axs.legend(loc='best', frameon=True)
     
     axs.grid(False)
     axs.spines['top'].set_color('black')
@@ -714,7 +775,9 @@ def plot_lag(samples: np.ndarray, maxlag: Optional[int] = 500, step: Optional[in
         for label in (axs.get_xticklabels() + axs.get_yticklabels() + [axs.xaxis.label, axs.yaxis.label]):
             label.set_color('black')
 
-    return fig, axs, ess, taus
+    plt.tight_layout()
+
+    return fig, axs, all_ess, all_taus
 
 def next_pow_two(n):
     i = 1

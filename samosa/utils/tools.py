@@ -101,34 +101,6 @@ def sample_multivariate_gaussian(mu: np.ndarray, sigma: np.ndarray, N: int = 1) 
     
     # Transpose to get (d, N) output format
     return samples.T
-
-def batched_variance(data: np.ndarray, batch_size: int) -> np.ndarray:
-    """
-    Calculates the variance of a dataset using a batched approach for multidimensional data.
-
-    Parameters
-    ----------
-    data : (dim, nsamples) array
-        Input data where dim is the number of dimensions and nsamples is the number of samples.
-    batch_size : int
-        Size of each batch to process.
-
-    Returns
-    -------
-    variance : np.ndarray
-        Array of shape (dim,) containing the variance for each dimension.
-    """
-    dim, nsamples = data.shape
-    n_batches = int(np.ceil(nsamples / batch_size))
-    batch_variances = np.zeros((dim, n_batches))
-
-    for i in range(n_batches):
-        start = i * batch_size
-        end = min((i + 1) * batch_size, nsamples)
-        batch = data[:, start:end]
-        batch_variances[:, i] = np.var(batch, axis=1, ddof=1)  # Sample variance for each dimension
-
-    return np.mean(batch_variances, axis=1)
     
 def laplace_approx(x0: np.ndarray, logpost: Callable, optmethod: str):
     """Perform the laplace approximation, returning the MAP point and an approximation of the covariance matrix.
@@ -311,7 +283,7 @@ def is_positive_definite(A: np.ndarray) -> bool:
     except np.linalg.LinAlgError:
         return False
     
-def batched_variance(data: np.ndarray, batch_size: int) -> np.ndarray:
+def batched_variance(data: np.ndarray, batch_size: Optional[int] = None) -> np.ndarray:
     """
     Calculates the variance of a dataset using a batched approach.
     
@@ -330,6 +302,10 @@ def batched_variance(data: np.ndarray, batch_size: int) -> np.ndarray:
     """
     # For (d, N) data, we need to compute variance along axis=1
     d, n_samples = data.shape
+    
+    if batch_size is None:
+        batch_size = n_samples // 10
+
     n_batches = int(np.ceil(n_samples / batch_size))
     
     # Initialize arrays for the running calculation

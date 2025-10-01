@@ -28,7 +28,7 @@ class MCMCsampler:
         restart (list): List of states to restart the chain from.
     """
     
-    def __init__(self, kernel: KernelProtocol, proposal: ProposalProtocol, initial_position: np.ndarray, n_iterations: int, print_iteration: int = 1000, save_iteraton: int = 1000, restart: List[ChainState] = None):
+    def __init__(self, kernel: KernelProtocol, proposal: ProposalProtocol, initial_position: np.ndarray, n_iterations: int, print_iteration: int = 1000, save_iteration: int = 1000, restart: List[ChainState] = None):
 
         dim = initial_position.shape[0]
         self.dim = dim
@@ -52,7 +52,7 @@ class MCMCsampler:
 
         self.n_iterations = n_iterations
         self.print_iteration = print_iteration
-        self.save_iterations = save_iteraton
+        self.save_iterations = save_iteration
         self.is_delayed_rejection = isinstance(kernel, DelayedRejectionKernel)
 
     def run(self, output_dir: str) -> None:

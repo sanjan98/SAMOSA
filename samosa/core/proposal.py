@@ -3,6 +3,7 @@ Template class file for proposal
 """
 
 # Imports
+import numpy as np
 from typing import Protocol, Optional, Tuple
 from samosa.core.state import ChainState
 
@@ -11,7 +12,7 @@ class ProposalProtocol(Protocol):
     Protocol for proposal distributions
     """
 
-    def sample(self, current_state: 'ChainState') -> 'ChainState':
+    def sample(self, current_state: 'ChainState', common_step: Optional[np.ndarray] = None) -> 'ChainState':
         """Generate candidate state from current state"""
         raise NotImplementedError("Implement sample method")
     
