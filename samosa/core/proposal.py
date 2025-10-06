@@ -46,9 +46,9 @@ class AdaptiveProposal(ProposalProtocol):
         self.proposal = base_proposal
         self.adapter = adapter
         
-    def sample(self, current_state: ChainState) -> ChainState:
+    def sample(self, current_state: ChainState, common_step: Optional[np.ndarray] = None) -> ChainState:
         """Sample from the base proposal"""
-        return self.proposal.sample(current_state)
+        return self.proposal.sample(current_state, common_step)
     
     def proposal_logpdf(self, current_state: ChainState, proposed_state: ChainState) -> Tuple[float, float]:
         """Calculate forward and reverse log probability using the base proposal"""

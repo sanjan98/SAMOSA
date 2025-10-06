@@ -72,7 +72,7 @@ class PreCrankedNicholson(ProposalProtocol):
         assert 0 < beta <= 1, "Beta must be in (0,1)"
         self.beta = beta
 
-    def sample(self, current_state: ChainState, common_step: Optional[np.ndarray]) -> ChainState:
+    def sample(self, current_state: ChainState, common_step: Optional[np.ndarray] = None) -> ChainState:
         dim = current_state.position.shape[0]
         if common_step is None:
             z = sample_multivariate_gaussian(np.zeros((dim, 1)), self.cov)

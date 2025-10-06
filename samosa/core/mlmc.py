@@ -88,6 +88,7 @@ class MLMCResults:
 
     level_means: List[np.ndarray]  # Mean difference for each level
     level_variances: List[np.ndarray]  # Variance for each level
+    level_correlations: List[np.ndarray]  # Correlations for each level
     mlmc_expectation: np.ndarray  # Final MLMC estimator
     mlmc_variance: np.ndarray  # MLMC estimator variance
     samples_per_level: List[int]
@@ -163,8 +164,8 @@ class MLMCSampler:
                 proposal=level.fine_proposal,
                 initial_position=level.initial_position_fine,
                 n_iterations=level.n_samples,
-                print_iteration=max(1, level.n_samples // 10),
-                save_iteration=max(1000, level.n_samples),
+                print_iteration=level.n_samples // 10,
+                save_iteration=level.n_samples // 10,
                 restart=level.restart_fine,
             )
             
@@ -183,8 +184,8 @@ class MLMCSampler:
                 initial_position_coarse=level.initial_position_coarse,
                 initial_position_fine=level.initial_position_fine,
                 n_iterations=level.n_samples,
-                print_iteration=max(1, level.n_samples // 10),
-                save_iteration=max(1000, level.n_samples),
+                print_iteration=level.n_samples // 10,
+                save_iteration=level.n_samples // 10,
                 restart_coarse=level.restart_coarse,
                 restart_fine=level.restart_fine,
             )
@@ -264,20 +265,20 @@ class MLMCCalculator:
             else:
                 samples_coarse, samples_fine = load_coupled_samples(level_dir)
             
-            mean_diff, variance_diff = self._compute_qoi_differences(samples_coarse, samples_fine, burnin_fraction)
-
+            mean_diff, variance_diff, correlations = self._compute_qoi_differences(samples_coarse, samples_fine, burnin_fraction)
+            
             # Store results for this level
             local_results[level] = {
                 'level': level,
                 'mean': mean_diff,
                 'variance': variance_diff,
+                'correlations': correlations,
                 'n_samples': len(samples_fine),
             }
             
             if self.print_progress:
                 print(f"Process {self.rank}: Completed level {level}")
 
-        
         # Gather results from all processes
         all_results = self.comm.gather(local_results, root=0)
         
@@ -292,6 +293,7 @@ class MLMCCalculator:
             sorted_levels = sorted(combined_results.keys())
             level_means = [combined_results[i]['mean'] for i in sorted_levels]
             level_variances = [combined_results[i]['variance'] for i in sorted_levels]
+            level_correlations = [combined_results[i]['correlations'] for i in sorted_levels]
             samples_per_level = [combined_results[i]['n_samples'] for i in sorted_levels]
             levels_completed = [combined_results[i]['level'] for i in sorted_levels]
             
@@ -303,6 +305,7 @@ class MLMCCalculator:
             results = MLMCResults(
                 level_means=level_means,
                 level_variances=level_variances,
+                level_correlations=level_correlations,
                 mlmc_expectation=mlmc_expectation,
                 mlmc_variance=mlmc_variance,
                 samples_per_level=samples_per_level,
@@ -328,29 +331,81 @@ class MLMCCalculator:
         
         return None
     
-    def _compute_qoi_differences(self, samples_coarse: List[ChainState], samples_fine: List[ChainState], burnin: float = 0.25) -> Tuple[np.ndarray, np.ndarray]:
-        """Compute QoI differences and statistics for a level"""
+    def _compute_qoi_differences(self, samples_coarse: List[ChainState], samples_fine: List[ChainState], burnin: float = 0.25) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Compute QoI differences, statistics, and per-dimension correlation for a level"""
 
         n_samples = len(samples_fine)
         start = int(burnin * n_samples)
         
         differences = []
+        qoi_fine_list = []
+        qoi_coarse_list = []
         for i in range(start, n_samples):
-            qoi_fine = samples_fine[i].qoi
+            qoi_fine = np.atleast_1d(samples_fine[i].qoi)
+            qoi_fine_list.append(qoi_fine)
             
             if samples_coarse[i] is not None:
-                qoi_coarse = samples_coarse[i].qoi
+                qoi_coarse = np.atleast_1d(samples_coarse[i].qoi)
+                qoi_coarse_list.append(qoi_coarse)
                 diff = qoi_fine - qoi_coarse
             else: 
+                qoi_coarse_list.append(np.full_like(qoi_fine, np.nan))
                 diff = qoi_fine
             
             differences.append(diff)
-        
+
         differences = np.array(differences).T
         mean_diff = np.mean(differences, axis=1)
         variance_diff = batched_variance(differences)
-        
-        return mean_diff, variance_diff
+
+        # Stack as (n_samples, dim)
+        qoi_fine_arr = np.vstack(qoi_fine_list)
+        qoi_coarse_arr = np.vstack(qoi_coarse_list)
+        valid_mask = ~np.isnan(qoi_coarse_arr).any(axis=1)
+        qoi_fine_valid = qoi_fine_arr[valid_mask]
+        qoi_coarse_valid = qoi_coarse_arr[valid_mask]
+
+        # Compute per-dimension correlation
+        if qoi_fine_valid.shape[0] > 1:
+            correlations = np.array([
+                np.corrcoef(qoi_fine_valid[:, d], qoi_coarse_valid[:, d])[0, 1]
+                for d in range(qoi_fine_valid.shape[1])
+            ])
+        else:
+            correlations = np.full(qoi_fine_valid.shape[1], 1.0)
+
+        return mean_diff, variance_diff, correlations
+    
+    def load_mlmc_results(self) -> MLMCResults:
+        """Load MLMC results"""
+        results_file = f"{self.output_dir}/mlmc_results.pkl"
+        with open(results_file, "rb") as f:
+            return pickle.load(f)
+    
+    def print_mlmc_summary(self):
+        """Print summary of MLMC results"""
+
+        if self.rank == 0:
+            results = self.load_mlmc_results()
+            
+            print(f"\n{'='*60}")
+            print(f"MLMC ESTIMATION SUMMARY")
+            print(f"{'='*60}")
+            
+            print(f"Levels completed: {results.levels_completed}")
+            print(f"Samples per level: {results.samples_per_level}")
+            print(f"MLMC expectation: {results.mlmc_expectation}")
+            print(f"MLMC variance: {results.mlmc_variance}")
+            
+            print(f"\nLevel-wise statistics:")
+            for i, level in enumerate(results.levels_completed):
+                print(f"  Level {level}:")
+                print(f"    Mean: {results.level_means[i]}")
+                print(f"    Variance: {results.level_variances[i]}")
+                print(f"    Samples: {results.samples_per_level[i]}")
+                print(f"    Correlations: {results.level_correlations[i]}")
+            
+            print(f"{'='*60}\n")
 
 class MLMCPostProcessor:
     """
@@ -422,7 +477,7 @@ class MLMCPostProcessor:
                 # 3. Level-wise autocorrelation plots per dimension
                 self._create_level_autocorr_plots(level, samples_coarse, samples_fine, maxlag, img_kwargs, burnin_fraction)
                 
-                # 4. Level-wise joint scatter plots (if requested)
+                # 4. Level-wise joint scatter plots
                 self._create_level_joint_plots(level, samples_coarse, samples_fine, img_kwargs, burnin_fraction)
                 
                 if self.print_progress:
@@ -527,8 +582,7 @@ class MLMCPostProcessor:
             fig.savefig(f"{level_dir}/autocorr.png", dpi=300, bbox_inches='tight')
             plt.close(fig)
     
-    def _create_level_joint_plots(self, level: int, samples_coarse: List[ChainState], 
-                                 samples_fine: List[ChainState], img_kwargs: dict, burnin: float = 0.0):
+    def _create_level_joint_plots(self, level: int, samples_coarse: List[ChainState], samples_fine: List[ChainState], img_kwargs: dict, burnin: float = 0.0):
         """Create joint scatter plots for a level (only for level > 0)"""
 
         level_dir = f"{self.output_dir}/level_{level}"
@@ -550,36 +604,6 @@ class MLMCPostProcessor:
         for i, fig in enumerate(fig_joints):
             fig.savefig(f"{level_dir}/joint_dim_{i+1}.png", dpi=300, bbox_inches='tight')
             plt.close(fig)
-    
-    def load_mlmc_results(self) -> MLMCResults:
-        """Load MLMC results"""
-        results_file = f"{self.output_dir}/mlmc_results.pkl"
-        with open(results_file, "rb") as f:
-            return pickle.load(f)
-    
-    def print_mlmc_summary(self, burnin_fraction: float = 0.0):
-        """Print summary of MLMC results"""
-        results = self.load_mlmc_results(burnin_fraction)
-        
-        print(f"\n{'='*60}")
-        print(f"MLMC ESTIMATION SUMMARY")
-        print(f"Burnin fraction: {burnin_fraction}")
-        print(f"{'='*60}")
-        
-        print(f"Levels completed: {results.levels_completed}")
-        print(f"Samples per level: {results.samples_per_level}")
-        print(f"MLMC expectation: {results.mlmc_expectation}")
-        print(f"MLMC variance: {results.mlmc_variance}")
-        print(f"MLMC standard error: {np.sqrt(results.mlmc_variance)}")
-        
-        print(f"\nLevel-wise statistics:")
-        for i, level in enumerate(results.levels_completed):
-            print(f"  Level {level}:")
-            print(f"    Mean: {results.level_means[i]}")
-            print(f"    Variance: {results.level_variances[i]}")
-            print(f"    Samples: {results.samples_per_level[i]}")
-        
-        print(f"{'='*60}\n")
 
 # Utility function for easy setup (unchanged)
 def create_mlmc_levels(
@@ -639,23 +663,20 @@ if __name__ == "__main__":
         output['qoi'] = qoi
 
         return output
-    
-#     def create_mlmc_levels(
-#     models: List[Tuple[ModelProtocol, ModelProtocol]],
-#     proposals: List[Tuple[ProposalProtocol, ProposalProtocol]],
-#     kernels: List[KernelProtocol],
-#     samples_per_level: List[int],
-#     initial_positions: List[Tuple[np.ndarray, np.ndarray]],
-# ) -> List[MLMCLevel]:
 
     from samosa.proposals.gaussianproposal import GaussianRandomWalk
+    from samosa.proposals.adapters import GlobalAdapter
+    from samosa.core.proposal import AdaptiveProposal
     from samosa.kernels.synce import SYNCEKernel
     from samosa.kernels.metropolis import MetropolisHastingsKernel
 
     L=4
     models_list = [lambda x, level=i: gaussian_model(x, level) for i in range(L)]
     models = [(None, models_list[0])] + [(models_list[i], models_list[i + 1]) for i in range(L - 1)]
-    proposals = [(None, GaussianRandomWalk(mu=np.zeros((2,1)), sigma=3 * np.eye(2)))] + [(GaussianRandomWalk(mu=np.zeros((2,1)), sigma=3 * np.eye(2)), GaussianRandomWalk(mu=np.zeros((2,1)), sigma=3 * np.eye(2))) for _ in range(L - 1)]
+    proposal = GaussianRandomWalk(mu=np.zeros((2,1)), sigma=3 * np.eye(2))
+    adapter = GlobalAdapter(ar = 0.44, adapt_end=10000)
+    adaptive_proposal = AdaptiveProposal(base_proposal=proposal, adapter=adapter)
+    proposals = [(None, adaptive_proposal)] + [(adaptive_proposal, adaptive_proposal) for _ in range(L - 1)]
     kernels = [SYNCEKernel(coarse_model=coarse, fine_model=fine) if coarse is not None else MetropolisHastingsKernel(model=fine) for coarse, fine in models]
     samples_per_level = [10000] * L
     initial_positions = [(None, np.array([[0.0],[0.0]]))] + [(np.array([[0.0],[0.0]]), np.array([[0.0],[0.0]])) for _ in range(L - 1)]
@@ -673,7 +694,7 @@ if __name__ == "__main__":
 
     mlmc_calc = MLMCCalculator(output_dir='mlmc_gaussian_example', num_levels=L, print_progress=True)
     mlmc_calc.compute_mlmc_estimator(burnin_fraction=0.3)
+    mlmc_calc.print_mlmc_summary()
 
     mlmc_post = MLMCPostProcessor(output_dir='mlmc_gaussian_example', print_progress=True)
     mlmc_post.process_levels(levels=list(range(L)), burnin_fraction=0.3)
-    
