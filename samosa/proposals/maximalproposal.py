@@ -15,7 +15,7 @@ class MaximalCoupling():
         self.proposal_coarse = proposal_coarse
         self.proposal_fine = proposal_fine
     
-    def sample(self, coarse_state: ChainState, fine_state: ChainState) -> ChainState:
+    def sample(self, coarse_state: ChainState, fine_state: ChainState) -> Tuple[np.ndarray, np.ndarray]:
         
         dim = coarse_state.position.shape[0]
         assert dim == fine_state.position.shape[0], "The dimensions of the two chains must be the same."

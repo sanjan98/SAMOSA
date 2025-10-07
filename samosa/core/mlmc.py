@@ -670,7 +670,7 @@ if __name__ == "__main__":
     from samosa.kernels.synce import SYNCEKernel
     from samosa.kernels.metropolis import MetropolisHastingsKernel
 
-    L=4
+    L = 4
     models_list = [lambda x, level=i: gaussian_model(x, level) for i in range(L)]
     models = [(None, models_list[0])] + [(models_list[i], models_list[i + 1]) for i in range(L - 1)]
     proposal = GaussianRandomWalk(mu=np.zeros((2,1)), sigma=3 * np.eye(2))
