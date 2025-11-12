@@ -296,7 +296,7 @@ class LowerTriangularMap(TransportMap):
 
         if self.reference_model is None:
             # Reference density
-            rho1 = multivariate_normal(np.zeros(1),np.eye(1))
+            rho1 = multivariate_normal(np.zeros(1), np.eye(1))
             rho_of_map_of_x = rho1.logpdf(map_of_x.T)
         else:
             # Use the reference model to compute the density

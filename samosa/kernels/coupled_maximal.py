@@ -12,7 +12,7 @@ from samosa.kernels.metropolis import MetropolisHastingsKernel
 from samosa.proposals.maximalproposal import MaximalCoupling
 from typing import Tuple
 
-class SYNCEKernel(KernelProtocol):
+class CoupledMaximalKernel(KernelProtocol):
     """
     Coupled kernel for Multi-Level MCMC sampling.
     Maintains two chains (high-fidelity and low-fidelity) and proposes coupled moves.

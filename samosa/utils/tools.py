@@ -5,7 +5,9 @@ Script housing some helper functions
 # Imports
 import numpy as np
 import scipy
-from typing import Callable, Optional
+from typing import Optional
+
+from samosa.core.model import ModelProtocol
 
 def lognormpdf(x: np.ndarray, mean: Optional[np.ndarray] = None, cov: Optional[np.ndarray] = None) -> np.ndarray:
 
@@ -102,7 +104,7 @@ def sample_multivariate_gaussian(mu: np.ndarray, sigma: np.ndarray, N: int = 1) 
     # Transpose to get (d, N) output format
     return samples.T
     
-def laplace_approx(x0: np.ndarray, logpost: Callable, optmethod: str):
+def laplace_approx(x0: np.ndarray, model: ModelProtocol, optmethod: str = 'BFGS'):
     """Perform the laplace approximation, returning the MAP point and an approximation of the covariance matrix.
 
     Parameters
@@ -130,7 +132,7 @@ def laplace_approx(x0: np.ndarray, logpost: Callable, optmethod: str):
     x0 = x0.flatten()
     
     # Gradient free method to obtain optimum
-    neg_post = lambda x: -logpost(x)
+    neg_post = lambda x: -model(x)['log_posterior']
     
     # Initial optimization using a gradient-free method
     res = scipy.optimize.minimize(neg_post, x0)

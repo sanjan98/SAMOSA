@@ -150,7 +150,7 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
 
     """
     Create a nice scatter plot matrix of the samples.
-    The marginals are one the digaonal and the joint distributions are on the off-diagonal.
+    The marginals are on the diagonal and the joint distributions are on the off-diagonal.
 
     Parameters
     ----------
@@ -312,10 +312,16 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
         ax.set_xlim((use_mins[ii] - 1e-10, use_maxs[ii] + 1e-10))
 
         diff = 0.2 * (use_maxs[ii] - use_mins[ii])
-        xticks = np.linspace(use_mins[ii] + diff, use_maxs[ii] - diff, 2)
+        if (use_maxs[ii] - use_mins[ii]) < 0.25:  # Adjust threshold as needed
+            xticks = [np.mean([use_mins[ii], use_maxs[ii]])]
+        else:
+            xticks = np.linspace(use_mins[ii] + diff, use_maxs[ii] - diff, 2)
         yticks = ax.get_yticks()
         if len(yticks) >= 2:
-            yticks = np.linspace(yticks[0], yticks[-1], 2)
+            if (yticks[1] - yticks[0]) < 0.25:
+                yticks = [yticks[0]]
+            else:
+                yticks = np.linspace(yticks[0], yticks[-1], 2)
         ax.set_xticks(xticks)
         ax.set_yticks(yticks)
         ax.tick_params(axis='both', labelsize=img_kwargs['tick_fontsize'])
@@ -354,7 +360,13 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
                 Z = kde(np.vstack([X.ravel(), Y.ravel()])).reshape(X.shape)
 
                 if hist_plot:
-                    ax.contour(X, Y, Z, levels=5, cmap=cmap, linewidths=1.0)
+                    max_z = Z.max()
+                    min_z = Z.min()
+                    all_levels = np.linspace(min_z, max_z, 6)
+                    
+                    # Skip the first (lowest density) level to remove the outermost contour
+                    levels = all_levels[1:]  # This gives you 5 levels, excluding the lowest
+                    ax.contour(X, Y, Z, levels=levels, cmap=cmap, linewidths=1.0)
                     ax.plot(samples[kk][ii, :], samples[kk][jj, :], 'o', ms=1, alpha=0.01, color=colors[kk % len(colors)], label=sample_labels[kk] if sample_labels is not None else f'Chain {kk+1}')
                 else:
                     ax.plot(samples[kk][ii, :], samples[kk][jj, :], 'o', ms=1, alpha=0.2, color=colors[kk % len(colors)], label=sample_labels[kk] if sample_labels is not None else f'Chain {kk+1}')
@@ -369,8 +381,14 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
             ax.set_ylim((use_mins[jj] - 1e-10, use_maxs[jj] + 1e-10))
 
             diff = 0.2 * (use_maxs[ii] - use_mins[ii])
-            xticks = np.linspace(use_mins[ii] + diff, use_maxs[ii] - diff, 2)
-            yticks = np.linspace(use_mins[jj] + diff, use_maxs[jj] - diff, 2)
+            if (use_maxs[ii] - use_mins[ii]) < 0.25:  # Adjust threshold as needed
+                xticks = [np.mean([use_mins[ii], use_maxs[ii]])]
+            else:
+                xticks = np.linspace(use_mins[ii] + diff, use_maxs[ii] - diff, 2)
+            if (use_maxs[jj] - use_mins[jj]) < 0.25:  # Adjust threshold as needed
+                yticks = [np.mean([use_mins[jj], use_maxs[jj]])]
+            else:
+                yticks = np.linspace(use_mins[jj] + diff, use_maxs[jj] - diff, 2)
             ax.set_xticks(xticks)
             ax.set_yticks(yticks)
             ax.tick_params(axis='both', labelsize=img_kwargs['tick_fontsize'])

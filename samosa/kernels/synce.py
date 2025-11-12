@@ -23,7 +23,7 @@ class SYNCEKernel(KernelProtocol):
     w is the weight for the resynchronization kernel, which can be set to 0 for the SYNCE kernel.
     """
 
-    def __init__(self, coarse_model: ModelProtocol, fine_model: ModelProtocol, w: float = 0.0, resync_type: str = 'maximal'):
+    def __init__(self, coarse_model: ModelProtocol, fine_model: ModelProtocol, w: float = 0.0, resync_type: str = 'independent'):
         """
         Initialize the SYNCE Coupled kernel.
         
@@ -84,9 +84,9 @@ class SYNCEKernel(KernelProtocol):
                 eta = sample_multivariate_gaussian(np.zeros((dim, 1)), np.eye(dim))
 
                 # Propose a move for the low-fidelity chain
-                proposed_coarse_position = current_coarse_state.metadata['mean'] + np.linalg.cholesky(proposal_coarse.cov) @ eta if hasattr(proposal_coarse, 'cov') else current_coarse_state.metadata['mean'] + np.linalg.cholesky(proposal_coarse.proposal.cov) @ eta
+                proposed_coarse_position = current_coarse_state.metadata['mean'] + np.linalg.cholesky(current_coarse_state.metadata['covariance']) @ eta
                 # Propose a move for the high-fidelity chain
-                proposed_fine_position = current_fine_state.metadata['mean'] + np.linalg.cholesky(proposal_fine.cov) @ eta if hasattr(proposal_fine, 'cov') else current_fine_state.metadata['mean'] + np.linalg.cholesky(proposal_fine.proposal.cov) @ eta
+                proposed_fine_position = current_fine_state.metadata['mean'] + np.linalg.cholesky(current_fine_state.metadata['covariance']) @ eta
 
             else:
                 raise ValueError(f"Unknown resynchronization type: {self.resync_type}. Supported types are 'maximal' and 'independent'.")

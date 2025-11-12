@@ -164,9 +164,7 @@ class MLMCSampler:
                 proposal=level.fine_proposal,
                 initial_position=level.initial_position_fine,
                 n_iterations=level.n_samples,
-                print_iteration=level.n_samples // 10,
-                save_iteration=level.n_samples // 10,
-                restart=level.restart_fine,
+                print_iteration=max(int(level.n_samples // 10), 1),
             )
             
             ar = sampler.run(level_output_dir)
@@ -184,10 +182,7 @@ class MLMCSampler:
                 initial_position_coarse=level.initial_position_coarse,
                 initial_position_fine=level.initial_position_fine,
                 n_iterations=level.n_samples,
-                print_iteration=level.n_samples // 10,
-                save_iteration=level.n_samples // 10,
-                restart_coarse=level.restart_coarse,
-                restart_fine=level.restart_fine,
+                print_iteration=max(int(level.n_samples // 10), 1),
             )
             
             ar_coarse, ar_fine = sampler.run(level_output_dir)
@@ -670,7 +665,7 @@ if __name__ == "__main__":
     from samosa.kernels.synce import SYNCEKernel
     from samosa.kernels.metropolis import MetropolisHastingsKernel
 
-    L = 4
+    L = 3
     models_list = [lambda x, level=i: gaussian_model(x, level) for i in range(L)]
     models = [(None, models_list[0])] + [(models_list[i], models_list[i + 1]) for i in range(L - 1)]
     proposal = GaussianRandomWalk(mu=np.zeros((2,1)), sigma=3 * np.eye(2))
@@ -678,7 +673,7 @@ if __name__ == "__main__":
     adaptive_proposal = AdaptiveProposal(base_proposal=proposal, adapter=adapter)
     proposals = [(None, adaptive_proposal)] + [(adaptive_proposal, adaptive_proposal) for _ in range(L - 1)]
     kernels = [SYNCEKernel(coarse_model=coarse, fine_model=fine) if coarse is not None else MetropolisHastingsKernel(model=fine) for coarse, fine in models]
-    samples_per_level = [10000] * L
+    samples_per_level = [500000, 50000, 10000]
     initial_positions = [(None, np.array([[0.0],[0.0]]))] + [(np.array([[0.0],[0.0]]), np.array([[0.0],[0.0]])) for _ in range(L - 1)]
 
     levels = create_mlmc_levels(
@@ -696,5 +691,5 @@ if __name__ == "__main__":
     mlmc_calc.compute_mlmc_estimator(burnin_fraction=0.3)
     mlmc_calc.print_mlmc_summary()
 
-    mlmc_post = MLMCPostProcessor(output_dir='mlmc_gaussian_example', print_progress=True)
-    mlmc_post.process_levels(levels=list(range(L)), burnin_fraction=0.3)
+    # mlmc_post = MLMCPostProcessor(output_dir='mlmc_gaussian_example', print_progress=True)
+    # mlmc_post.process_levels(levels=list(range(L)), burnin_fraction=0.3)

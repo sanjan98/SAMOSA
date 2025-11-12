@@ -46,7 +46,7 @@ class IndependentProposal(ProposalProtocol):
         self.sigma = sigma
         self.cov = sigma.copy()
 
-    def sample(self, _: ChainState, common_step: Optional[np.ndarray]) -> ChainState:
+    def sample(self, _: ChainState, common_step: Optional[np.ndarray] = None) -> ChainState:
         if common_step is None:
             return ChainState(position=sample_multivariate_gaussian(self.mu, self.cov))
         else:
@@ -65,12 +65,28 @@ class IndependentProposal(ProposalProtocol):
 class PreCrankedNicholson(ProposalProtocol):
     """Preconditioned Cranked-Nicholson proposal"""
 
-    def __init__(self, mu: np.ndarray, sigma: np.ndarray, beta: float):
+    def __init__(self, mu: np.ndarray, sigma: np.ndarray, beta: float, target_acceptance: float = 0.25, long_alpha: float = 0.99, short_alpha: float = 0.9, adjust_rate: float = 0.01, beta_min: float = 1e-3, beta_max: float = 1-1e-3, eps: float = 1e-06):
         self.mu = mu
         self.sigma = sigma
         self.cov = sigma.copy()
         assert 0 < beta <= 1, "Beta must be in (0,1)"
         self.beta = beta
+
+        # --- Adaptive beta parameters ---
+        self.target_acceptance = target_acceptance
+        self.long_alpha = long_alpha
+        self.short_alpha = short_alpha
+        self.adjust_rate = adjust_rate
+        self.beta_min = beta_min
+        self.beta_max = beta_max
+        # --- Running averages ---
+        self.long_average = target_acceptance
+        self.short_average = target_acceptance
+
+        # --- Adaptation parameters for covariance ---
+        self.eps = eps
+        self.scale = 2.4**2 / mu.shape[0]
+
 
     def sample(self, current_state: ChainState, common_step: Optional[np.ndarray] = None) -> ChainState:
         dim = current_state.position.shape[0]
@@ -92,6 +108,32 @@ class PreCrankedNicholson(ProposalProtocol):
 
         return logq_forward, logq_reverse
 
-    def adapt(self, _: ChainState):
-        """No adaptation for this proposal"""
-        pass
+    def adapt(self, state: ChainState):
+        """Adapt the beta parameter based on acceptance rate"""
+        is_accepted = state.metadata.get('is_accepted', False)
+        self.long_average = self.long_alpha * self.long_average + is_accepted * (1 - self.long_alpha)
+        self.short_average = self.short_alpha * self.long_average + is_accepted * (1 - self.short_alpha)
+        # Adjust beta using both averages
+        adjusted_beta = (
+            self.beta +
+            self.adjust_rate * (self.long_average - self.target_acceptance) +
+            0.5 * self.adjust_rate * (self.short_average - self.target_acceptance)
+        )
+        # Clamp beta within the preset range
+        self.beta = np.clip(adjusted_beta, self.beta_min, self.beta_max)
+
+        # Doing this to get the updated mean and covariance for resynchronization
+        x = state.reference_position if state.reference_position is not None else state.position
+        iteration = state.metadata['iteration']
+        xmean_minus = state.metadata['mean']
+        xcov_minus = state.metadata['covariance']
+        dim = xmean_minus.shape[0]
+
+        # Update the mean
+        xmean = xmean_minus + (x - xmean_minus) / iteration
+        xcov = (iteration - 1) / iteration * xcov_minus + self.scale / iteration * (iteration * xmean_minus @ xmean_minus.T - (iteration + 1) * xmean @ xmean.T + x @ x.T + self.eps * np.eye(dim))
+
+        # Update the state metadata
+        state.metadata['mean'] = xmean
+        state.metadata['covariance'] = xcov
+        
