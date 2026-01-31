@@ -295,7 +295,7 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
             ax.fill_between(x_grid, 0, kde(x_grid), color=colors[kk % len(colors)], alpha=0.3)
             ax.plot(x_grid, kde(x_grid), color=colors[kk % len(colors)], alpha=0.7)
             # Plot vertical line for mean of this chain and dimension
-            ax.axvline(means[kk, ii], color=colors[kk % len(colors)], linestyle='--', lw=2)
+            # ax.axvline(means[kk, ii], color=colors[kk % len(colors)], linestyle='--', lw=2)
 
         ax.set_xlim((use_mins[ii], use_maxs[ii]))
         ax.set_ylim(0)  # Start the y-axis at zero for alignment with lower plots
@@ -367,15 +367,15 @@ def scatter_matrix(samples: List[np.ndarray], mins: Optional[np.ndarray] = None,
                     # Skip the first (lowest density) level to remove the outermost contour
                     levels = all_levels[1:]  # This gives you 5 levels, excluding the lowest
                     ax.contour(X, Y, Z, levels=levels, cmap=cmap, linewidths=1.0)
-                    ax.plot(samples[kk][ii, :], samples[kk][jj, :], 'o', ms=1, alpha=0.01, color=colors[kk % len(colors)], label=sample_labels[kk] if sample_labels is not None else f'Chain {kk+1}')
+                    ax.plot(samples[kk][ii, :], samples[kk][jj, :], 'o', ms=1, alpha=0.01, color=colors[kk % len(colors)], label=sample_labels[kk] if sample_labels is not None else f'Chain {kk+1}', rasterized=True)
                 else:
-                    ax.plot(samples[kk][ii, :], samples[kk][jj, :], 'o', ms=1, alpha=0.2, color=colors[kk % len(colors)], label=sample_labels[kk] if sample_labels is not None else f'Chain {kk+1}')
+                    ax.plot(samples[kk][ii, :], samples[kk][jj, :], 'o', ms=1, alpha=0.2, color=colors[kk % len(colors)], label=sample_labels[kk] if sample_labels is not None else f'Chain {kk+1}', rasterized=True)
             if specials is not None:
                 for special in specials:
                     if 'color' in special:
-                        ax.plot(special['vals'][ii], special['vals'][jj], 'x', color=special['color'], ms=2, mew=2)
+                        ax.plot(special['vals'][ii], special['vals'][jj], 'x', color=special['color'], ms=2, mew=2, rasterized=True)
                     else:
-                        ax.plot(special['vals'][ii], special['vals'][jj], 'x', ms=2, mew=2)
+                        ax.plot(special['vals'][ii], special['vals'][jj], 'x', ms=2, mew=2, rasterized=True)
 
             ax.set_xlim((use_mins[ii], use_maxs[ii]))
             ax.set_ylim((use_mins[jj] - 1e-10, use_maxs[jj] + 1e-10))
@@ -527,7 +527,7 @@ def joint_plots(samples: List[np.ndarray], img_kwargs: Optional[Dict[str, int]] 
         y = samples[1][dd, :]
         
         # Create joint plot using seaborn
-        g = sns.jointplot(x=x, y=y, kind='scatter', marginal_kws=dict(bins=bins, fill=True), alpha=0.6, s=30, linewidth=0)
+        g = sns.jointplot(x=x, y=y, kind='scatter', marginal_kws=dict(bins=bins, fill=True), alpha=0.6, s=30, linewidth=0, joint_kws={'rasterized': True})
         g.figure.set_size_inches((8, 8))
         
         # Set labels
