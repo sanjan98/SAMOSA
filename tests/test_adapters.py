@@ -1,243 +1,119 @@
-"""
-Tests for proposal adaptation strategies
-"""
-
-import pytest
 import numpy as np
-from samosa.proposals.adapters import HaarioAdapter, GlobalAdapter
-from samosa.proposals.gaussianproposal import GaussianRandomWalk, IndependentProposal
-from samosa.core.state import ChainState
+import pytest
 
-# --------------------------------------------------
-# Fixtures
-# --------------------------------------------------
+from samosa.core.state import ChainState
+from samosa.proposals.adapters import GlobalAdapter, HaarioAdapter
+from samosa.proposals.gaussianproposal import IndependentProposal
+
+
 @pytest.fixture
-def current_state():
-    """A sample ChainState for testing adaptations."""
+def state():
     return ChainState(
         position=np.array([[1.0], [-0.5]]),
         log_posterior=-0.625,
         metadata={
-            'iteration': 100,
-            'mean': np.array([[0.5], [0.5]]),
-            'covariance': np.eye(2),
-            'lambda': 1.0,
-            'acceptance_probability': 0.25
-        }
+            "iteration": 100,
+            "mean": np.array([[0.5], [0.5]]),
+            "covariance": np.eye(2),
+            "lambda": 1.0,
+            "acceptance_probability": 0.25,
+        },
     )
 
-@pytest.fixture
-def gaussian_rw():
-    """Gaussian random walk proposal for testing adapters."""
-    return GaussianRandomWalk(mu=np.zeros((2,1)), sigma=np.eye(2))
 
 @pytest.fixture
-def independent_proposal():
-    """Independent proposal for testing adapters."""
-    return IndependentProposal(mu=np.zeros((2,1)), sigma=np.eye(2))
+def proposal():
+    return IndependentProposal(mu=np.zeros((2, 1)), cov=np.eye(2))
 
-@pytest.fixture
-def haario_adapter():
-    """Haario adaptation strategy."""
-    return HaarioAdapter(scale=2.38**2/2, adapt_start=50, adapt_end=500)
 
-@pytest.fixture
-def global_adapter():
-    """Global adaptation strategy."""
-    return GlobalAdapter(ar=0.234, adapt_start=50, adapt_end=500)
+def test_haario_adapter_init_validation():
+    with pytest.raises(ValueError):
+        HaarioAdapter(scale=0.0)
 
-# --------------------------------------------------
-# Haario Adapter Tests
-# --------------------------------------------------
-def test_haario_init(haario_adapter):
-    """Test initialization of HaarioAdapter."""
-    assert haario_adapter.scale == 2.38**2/2
-    assert haario_adapter.adapt_start == 50
-    assert haario_adapter.adapt_end == 500
-    assert haario_adapter.eps > 0
 
-def test_haario_before_adaptation_window(haario_adapter, gaussian_rw, current_state):
-    """Test that no adaptation occurs before adapt_start."""
-    # Save original covariance
-    original_cov = gaussian_rw.cov.copy()
-    
-    # Set iteration to before adapt_start
-    current_state.metadata['iteration'] = haario_adapter.adapt_start - 1
-    
-    # Run adaptation
-    haario_adapter.adapt(gaussian_rw, current_state)
-    
-    # Mean should be set to zero
-    assert np.allclose(gaussian_rw.mu, np.zeros((2, 1)))
-    # Covariance should remain unchanged
-    assert np.allclose(gaussian_rw.cov, original_cov)
+def test_haario_adapter_updates_mean_only_outside_window(state, proposal):
+    adapter = HaarioAdapter(scale=2.38**2 / 2, adapt_start=200, adapt_end=500)
+    cov_before = proposal.cov.copy()
+    mean_before = state.metadata["mean"].copy()
 
-def test_haario_after_adaptation_window(haario_adapter, gaussian_rw, current_state):
-    """Test that no adaptation occurs after adapt_end."""
-    # Save original covariance
-    original_cov = gaussian_rw.cov.copy()
-    
-    # Set iteration to after adapt_end
-    current_state.metadata['iteration'] = haario_adapter.adapt_end + 1
-    
-    # Run adaptation
-    haario_adapter.adapt(gaussian_rw, current_state)
-    
-    # Mean should be set to zero
-    assert np.allclose(gaussian_rw.mu, np.zeros((2, 1)))
-    # Covariance should remain unchanged
-    assert np.allclose(gaussian_rw.cov, original_cov)
+    adapter.adapt(proposal, state)
 
-def test_haario_during_adaptation_window(haario_adapter, gaussian_rw, current_state):
-    """Test that adaptation occurs during the adaptation window."""
-    # Save original covariance
-    original_cov = gaussian_rw.cov.copy()
-    
-    # Set iteration within adaptation window
-    current_state.metadata['iteration'] = (haario_adapter.adapt_start + haario_adapter.adapt_end) // 2
-    
-    # Run adaptation
-    haario_adapter.adapt(gaussian_rw, current_state)
-    
-    # Covariance should be updated
-    assert not np.allclose(gaussian_rw.cov, original_cov)
-    
-    # Adapted covariance should still be positive definite
-    assert np.all(np.linalg.eigvals(gaussian_rw.cov) > 0)
+    assert not np.allclose(state.metadata["mean"], mean_before)
+    assert np.allclose(state.metadata["covariance"], np.eye(2))
+    assert np.allclose(proposal.cov, cov_before)
+    assert np.allclose(proposal.mu, state.metadata["mean"])
 
-def test_haario_mean_update(haario_adapter, gaussian_rw, current_state):
-    """Test that the mean is updated correctly."""
-    # Initial mean
-    initial_mean = current_state.metadata['mean'].copy()
-    
-    # Set iteration within any window as mean update still occures
-    current_state.metadata['iteration'] = haario_adapter.adapt_start - 1
-    
-    # Run adaptation
-    haario_adapter.adapt(gaussian_rw, current_state)
-    
-    # Mean should be updated according to recursive formula
-    expected_mean = initial_mean + (current_state.position - initial_mean) / current_state.metadata['iteration']
-    assert np.allclose(current_state.metadata['mean'], expected_mean)
 
-def test_haario_with_independent_proposal(haario_adapter, independent_proposal, current_state):
-    """Test that HaarioAdapter works with IndependentProposal."""
-    # Save original parameters
-    original_mu = independent_proposal.mu.copy()
-    original_cov = independent_proposal.cov.copy()
-    
-    # Set iteration within adaptation window
-    current_state.metadata['iteration'] = (haario_adapter.adapt_start + haario_adapter.adapt_end) // 2
-    
-    # Run adaptation
-    haario_adapter.adapt(independent_proposal, current_state)
-    
-    # Mean should be updated
-    assert not np.allclose(independent_proposal.mu, original_mu)
-    
-    # Covariance should be updated
-    assert not np.allclose(independent_proposal.cov, original_cov)
-    
-    # Updated covariance should be positive definite
-    assert np.all(np.linalg.eigvals(independent_proposal.cov) > 0)
+def test_haario_adapter_updates_covariance_inside_window(state, proposal):
+    adapter = HaarioAdapter(scale=2.38**2 / 2, adapt_start=10, adapt_end=500)
+    cov_before = proposal.cov.copy()
 
-# --------------------------------------------------
-# Global Adapter Tests
-# --------------------------------------------------
-def test_global_init(global_adapter):
-    """Test initialization of GlobalAdapter."""
-    assert global_adapter.ar == 0.234
-    assert global_adapter.adapt_start == 50
-    assert global_adapter.adapt_end == 500
-    assert global_adapter.C > 0
-    assert global_adapter.alpha > 0
-    assert global_adapter.eps > 0
+    adapter.adapt(proposal, state)
 
-def test_global_before_adaptation_window(global_adapter, gaussian_rw, current_state):
-    """Test that no adaptation occurs before adapt_start."""
-    # Save original lambda
-    original_lambda = current_state.metadata['lambda']
+    assert not np.allclose(proposal.cov, cov_before)
+    assert np.all(np.linalg.eigvals(proposal.cov) > 0)
 
-    # Save original covariance
-    original_cov = gaussian_rw.cov.copy()
-    
-    # Set iteration to before adapt_start
-    current_state.metadata['iteration'] = global_adapter.adapt_start - 1
-    
-    # Run adaptation
-    global_adapter.adapt(gaussian_rw, current_state)
-    
-    # Lambda should remain unchanged
-    assert current_state.metadata['lambda'] == original_lambda
-    # Covariance should remain unchanged
-    assert np.allclose(gaussian_rw.cov, original_cov)
 
-def test_global_after_adaptation_window(global_adapter, gaussian_rw, current_state):
-    """Test that no adaptation occurs after adapt_end."""
-    # Save original lambda
-    original_lambda = current_state.metadata['lambda']
+def test_haario_adapter_uses_reference_position_when_present(proposal):
+    state = ChainState(
+        position=np.array([[10.0], [10.0]]),
+        reference_position=np.array([[1.0], [-1.0]]),
+        log_posterior=-1.0,
+        metadata={
+            "iteration": 50,
+            "mean": np.zeros((2, 1)),
+            "covariance": np.eye(2),
+            "lambda": 1.0,
+            "acceptance_probability": 0.3,
+        },
+    )
+    adapter = HaarioAdapter(scale=1.0, adapt_start=10, adapt_end=100)
+    adapter.adapt(proposal, state)
+    assert state.reference_position is not None and state.metadata is not None
+    assert np.allclose(state.metadata["mean"], state.reference_position / 50.0)
 
-    # Save original covariance
-    original_cov = gaussian_rw.cov.copy()
-    
-    # Set iteration to after adapt_end
-    current_state.metadata['iteration'] = global_adapter.adapt_end + 1
-    
-    # Run adaptation
-    global_adapter.adapt(gaussian_rw, current_state)
-    
-    # Lambda should remain unchanged
-    assert current_state.metadata['lambda'] == original_lambda
-    # Covariance should remain unchanged
-    assert np.allclose(gaussian_rw.cov, original_cov)
 
-def test_global_adaptation_low_acceptance(global_adapter, gaussian_rw, current_state):
-    """Test adaptation behavior with low acceptance rate."""
-    # Set iteration within adaptation window
-    current_state.metadata['iteration'] = (global_adapter.adapt_start + global_adapter.adapt_end) // 2
-    
-    # Set low acceptance rate
-    original_lambda = current_state.metadata['lambda']
-    current_state.metadata['acceptance_probability'] = 0.1  # below target 0.234
-    
-    # Run adaptation
-    global_adapter.adapt(gaussian_rw, current_state)
-    
-    # Lambda should decrease to improve acceptance
-    assert current_state.metadata['lambda'] < original_lambda
+def test_haario_adapter_raises_without_metadata(proposal):
+    adapter = HaarioAdapter(scale=1.0)
+    state = ChainState(position=np.zeros((2, 1)), log_posterior=0.0, metadata=None)
+    with pytest.raises(ValueError):
+        adapter.adapt(proposal, state)
 
-def test_global_adaptation_high_acceptance(global_adapter, gaussian_rw, current_state):
-    """Test adaptation behavior with high acceptance rate."""
-    # Set iteration within adaptation window
-    current_state.metadata['iteration'] = (global_adapter.adapt_start + global_adapter.adapt_end) // 2
-    
-    # Set high acceptance rate
-    original_lambda = current_state.metadata['lambda']
-    current_state.metadata['acceptance_probability'] = 0.5  # above target 0.234
-    
-    # Run adaptation
-    global_adapter.adapt(gaussian_rw, current_state)
-    
-    # Lambda should increase to lower acceptance
-    assert current_state.metadata['lambda'] > original_lambda
 
-def test_global_with_independent_proposal(global_adapter, independent_proposal, current_state):
-    """Test that GlobalAdapter works with IndependentProposal."""
-    # Set iteration within adaptation window
-    current_state.metadata['iteration'] = (global_adapter.adapt_start + global_adapter.adapt_end) // 2
-    
-    # Save original mean and lambda
-    original_mu = independent_proposal.mu.copy()
-    original_lambda = current_state.metadata['lambda']
-    
-    # Set high acceptance rate to trigger adaptation
-    current_state.metadata['acceptance_probability'] = 0.5  # above target 0.234
-    
-    # Run adaptation
-    global_adapter.adapt(independent_proposal, current_state)
-    
-    # Mean should be updated
-    assert not np.allclose(independent_proposal.mu, original_mu)
-    
-    # Lambda should be increased to lower acceptance
-    assert current_state.metadata['lambda'] > original_lambda
+def test_global_adapter_init_validation():
+    with pytest.raises(ValueError):
+        GlobalAdapter(target_ar=0.0)
+    with pytest.raises(ValueError):
+        GlobalAdapter(target_ar=0.5, C=0.0)
+    with pytest.raises(ValueError):
+        GlobalAdapter(target_ar=0.5, alpha=0.0)
+
+
+def test_global_adapter_updates_lambda_inside_window(state, proposal):
+    adapter = GlobalAdapter(target_ar=0.234, adapt_start=10, adapt_end=500, C=1.0, alpha=0.5)
+    lambda_before = state.metadata["lambda"]
+    state.metadata["acceptance_probability"] = 0.5
+
+    adapter.adapt(proposal, state)
+
+    assert state.metadata["lambda"] > lambda_before
+    assert np.allclose(proposal.mu, state.metadata["mean"])
+    assert np.allclose(proposal.cov, state.metadata["lambda"] * state.metadata["covariance"])
+
+
+def test_global_adapter_no_lambda_change_outside_window(state, proposal):
+    adapter = GlobalAdapter(target_ar=0.234, adapt_start=200, adapt_end=300)
+    lambda_before = state.metadata["lambda"]
+    cov_before = proposal.cov.copy()
+
+    adapter.adapt(proposal, state)
+
+    assert state.metadata["lambda"] == lambda_before
+    assert np.allclose(proposal.cov, cov_before)
+
+
+def test_global_adapter_raises_without_metadata(proposal):
+    adapter = GlobalAdapter()
+    state = ChainState(position=np.zeros((2, 1)), log_posterior=0.0, metadata=None)
+    with pytest.raises(ValueError):
+        adapter.adapt(proposal, state)

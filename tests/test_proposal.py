@@ -1,141 +1,89 @@
-import pytest
 import numpy as np
-from samosa.proposals.gaussianproposal import (
-    GaussianRandomWalk,
-    IndependentProposal,
-)
+import pytest
+
+from samosa.core.proposal import AdapterBase, AdaptiveProposal, ProposalBase
 from samosa.core.state import ChainState
 
-# --------------------------------------------------
-# Fixtures (Test Data Setup)
-# --------------------------------------------------
-@pytest.fixture
-def current_state():
-    """A sample ChainState for testing proposals."""
-    return ChainState(
-        position=np.array([[1.0], [-0.5]]),
-        log_posterior=-0.625,
-        metadata={
-            'iteration': 100,
-            'mean': np.array([[0.5], [0.5]]),
-            'covariance': np.eye(2),
-            'lambda': 1.0,
-            'acceptance_probability': 0.25
-        }
-    )
 
-@pytest.fixture
-def gaussian_rw():
-    """Gaussian random walk proposal with identity covariance."""
-    return GaussianRandomWalk(mu=np.zeros((2, 1)), sigma=np.eye(2))
+class ConcreteProposal(ProposalBase):
+    def sample(self, current_state: ChainState, common_step=None) -> ChainState:
+        if common_step is None:
+            step = np.zeros_like(current_state.position)
+        else:
+            step = common_step
+        return ChainState(position=current_state.position + step)
 
-@pytest.fixture
-def independent_proposal():
-    """Independent proposal centered at origin."""
-    return IndependentProposal(mu=np.zeros((2, 1)), sigma=2.0 * np.eye(2))
+    def proposal_logpdf(self, current_state: ChainState, proposed_state: ChainState) -> tuple[float, float]:
+        return 0.0, 0.0
 
-# --------------------------------------------------
-# Gaussian Random Walk Tests
-# --------------------------------------------------
-def test_gaussian_rw_init(gaussian_rw):
-    """Test initialization of GaussianRandomWalk."""
-    assert gaussian_rw.mu.shape == (2, 1)
-    assert gaussian_rw.cov.shape == (2, 2)
-    assert np.allclose(gaussian_rw.mu, np.zeros((2, 1)))
-    assert np.allclose(gaussian_rw.cov, np.eye(2))
 
-def test_gaussian_rw_sample(gaussian_rw, current_state):
-    """Test that GaussianRandomWalk samples correctly."""
-    # Sample multiple times to check randomness
-    samples = [gaussian_rw.sample(current_state).position for _ in range(100)]
-    for sample in samples:
-        assert sample.shape == (2, 1)
+class ConcreteAdapter(AdapterBase):
+    def __init__(self):
+        super().__init__(adapt_start=1, adapt_end=10, eps=1e-6)
+        self.calls = 0
 
-    samples = np.array(samples).squeeze()
-    
-    # Check shape
-    assert samples.shape == (100, 2)
-    
-    # Check that samples are different
-    assert len(np.unique(samples, axis=0)) > 1
-    
-    # Check that samples are centered around current state (approximately)
-    assert np.allclose(np.mean(samples, axis=0), current_state.position.flatten(), atol=0.5)
+    def adapt(self, proposal: ProposalBase, state: ChainState) -> None:
+        self.calls += 1
+        proposal.update_parameters(mu=state.position)
 
-def test_gaussian_rw_logpdf(gaussian_rw, current_state):
-    """Test proposal_logpdf for GaussianRandomWalk."""
-    # Create proposed state with a known step
-    step = np.array([[0.5], [0.5]])
-    proposed_state = ChainState(position=current_state.position + step)
-    
-    # Calculate forward and reverse densities
-    logq_fwd, logq_rev = gaussian_rw.proposal_logpdf(current_state, proposed_state)
-    
-    # For random walk, forward and reverse densities should be equal
-    assert np.isclose(logq_fwd, logq_rev, atol=1e-10)
-    
-    # Check against manual calculation
-    expected_log_density = -0.5 * (step.T @ step).item() - np.log(2 * np.pi)
-    assert np.isclose(logq_fwd, expected_log_density, atol=1e-6)
+class DummyAdapter(AdapterBase):
+    def adapt(self, proposal: ProposalBase, state: ChainState) -> None:
+        return None
 
-# --------------------------------------------------
-# Independent Proposal Tests
-# --------------------------------------------------
-def test_independent_init(independent_proposal):
-    """Test initialization of IndependentProposal."""
-    assert independent_proposal.mu.shape == (2, 1)
-    assert independent_proposal.cov.shape == (2, 2)
-    assert np.allclose(independent_proposal.mu, np.zeros((2, 1)))
-    assert np.allclose(independent_proposal.cov, 2.0 * np.eye(2))
 
-def test_independent_sample(independent_proposal, current_state):
-    """Test sampling from IndependentProposal."""
-    # Sample multiple times
-    samples = [independent_proposal.sample(current_state).position for _ in range(100)]
-    # Assert size of each sample
-    for sample in samples:
-        assert sample.shape == (2, 1)
+def test_proposal_base_update_parameters():
+    proposal = ConcreteProposal(mu=np.zeros((2, 1)), cov=np.eye(2))
+    new_mu = np.ones((2, 1))
+    new_cov = 2.0 * np.eye(2)
 
-    samples = np.array(samples).squeeze()
-    
-    # Check shape
-    assert samples.shape == (100, 2)
-    
-    # Check randomness
-    assert len(np.unique(samples, axis=0)) > 1
-    
-    # Check samples are centered around proposal mean (approximately)
-    # With 50 samples, we should be within 0.5 of the mean
-    assert np.allclose(np.mean(samples, axis=0), independent_proposal.mu.flatten(), atol=0.5)
-    
-    # Check variance is approximately as specified
-    # With 50 samples, we should be within 50% of the true variance
-    var = np.var(samples, axis=0)
-    expected_var = np.diag(independent_proposal.cov).flatten()
-    assert np.all((var > 0.5 * expected_var) & (var < 1.5 * expected_var))
+    proposal.update_parameters(mu=new_mu, cov=new_cov)
 
-def test_independent_logpdf(independent_proposal):
-    """Test proposal_logpdf for IndependentProposal."""
-    # Create two different states
-    state1 = ChainState(position=np.array([[0.0], [0.0]]))
-    state2 = ChainState(position=np.array([[1.0], [1.0]]))
-    
-    # Calculate forward and reverse densities
-    logq_fwd, logq_rev = independent_proposal.proposal_logpdf(state1, state2)
-    
-    # For independent proposal, densities depend only on target position
-    # Forward: p(state2 | anything)
-    # Reverse: p(state1 | anything)
-    
-    # Manual calculations
-    expected_logq_fwd = -0.5 * (state2.position.T @ np.linalg.inv(independent_proposal.cov) @ state2.position).item() - np.log(2 * np.pi * np.sqrt(np.linalg.det(independent_proposal.cov)))
-    expected_logq_rev = -0.5 * (state1.position.T @ np.linalg.inv(independent_proposal.cov) @ state1.position).item() - np.log(2 * np.pi * np.sqrt(np.linalg.det(independent_proposal.cov)))
-    
-    # Check against expected
-    assert np.isclose(logq_fwd, expected_logq_fwd, atol=1e-6)
-    assert np.isclose(logq_rev, expected_logq_rev, atol=1e-6)
-    
-    # Reversing the order should swap the densities
-    logq_rev2, logq_fwd2 = independent_proposal.proposal_logpdf(state2, state1)
-    assert np.isclose(logq_fwd, logq_fwd2, atol=1e-6)
-    assert np.isclose(logq_rev, logq_rev2, atol=1e-6)
+    assert np.allclose(proposal.mu, new_mu)
+    assert np.allclose(proposal.cov, new_cov)
+
+
+def test_proposal_base_default_adapt_noop():
+    proposal = ConcreteProposal(mu=np.zeros((2, 1)), cov=np.eye(2))
+    state = ChainState(position=np.zeros((2, 1)), log_posterior=0.0, metadata={})
+    proposal.adapt(state)
+    assert np.allclose(proposal.mu, np.zeros((2, 1)))
+
+
+def test_adapter_base_validates_window():
+    with pytest.raises(ValueError):
+        DummyAdapter(adapt_start=-1, adapt_end=10)
+
+    with pytest.raises(ValueError):
+        DummyAdapter(adapt_start=10, adapt_end=5)
+
+
+def test_adaptive_proposal_delegates_sample_logpdf_and_attrs():
+    base = ConcreteProposal(mu=np.zeros((2, 1)), cov=np.eye(2))
+    adapter = ConcreteAdapter()
+    wrapped = AdaptiveProposal(base, adapter)
+
+    state = ChainState(position=np.array([[1.0], [2.0]]), log_posterior=-1.0, metadata={"iteration": 1})
+    proposed = wrapped.sample(state, common_step=np.ones((2, 1)))
+    logq_fwd, logq_rev = wrapped.proposal_logpdf(state, proposed)
+
+    assert np.allclose(proposed.position, np.array([[2.0], [3.0]]))
+    assert logq_fwd == 0.0 and logq_rev == 0.0
+
+    # __getattr__ delegation
+    assert np.allclose(wrapped.mu, base.mu)
+
+    # __setattr__ delegation
+    wrapped.cov = 3.0 * np.eye(2)
+    assert np.allclose(base.cov, 3.0 * np.eye(2))
+
+
+def test_adaptive_proposal_calls_adapter():
+    base = ConcreteProposal(mu=np.zeros((2, 1)), cov=np.eye(2))
+    adapter = ConcreteAdapter()
+    wrapped = AdaptiveProposal(base, adapter)
+    state = ChainState(position=np.array([[3.0], [4.0]]), log_posterior=-1.0, metadata={"iteration": 1})
+
+    wrapped.adapt(state)
+
+    assert adapter.calls == 1
+    assert np.allclose(base.mu, state.position)
