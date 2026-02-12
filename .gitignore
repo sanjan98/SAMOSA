@@ -179,5 +179,8 @@ cython_debug/
 # Images
 *.png
 
+# Pre-commit configuration file
+.pre-commit-config.yaml
+
 # Particular folder
 mlmc_gaussian_example/
