@@ -2,10 +2,13 @@
 Base classes for MCMC proposal distributions and adaptation strategies.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 import numpy as np
 from typing import Optional, Any
 from samosa.core.state import ChainState
+from samosa.core.map import TransportMap
 
 
 class ProposalBase(ABC):
@@ -59,9 +62,9 @@ class ProposalBase(ABC):
             proposed_state: Proposed state.
 
         Returns:
-            Tuple of (log_q_forward, log_q_reverse) where:
-                - log_q_forward: log q(proposed | current)
-                - log_q_reverse: log q(current | proposed)
+            Tuple of (logq_forward, logq_reverse) where:
+                - logq_forward: log q(proposed | current)
+                - logq_reverse: log q(current | proposed)
         """
         raise NotImplementedError("Subclasses must implement proposal_logpdf()")
 
@@ -80,7 +83,14 @@ class ProposalBase(ABC):
         if cov is not None:
             self.cov = cov
 
-    def adapt(self, state: ChainState) -> None:
+    def adapt(
+        self,
+        state: ChainState,
+        *,
+        samples: Optional[list[ChainState]] = None,
+        force_adapt: Optional[bool] = False,
+        paired_samples: Optional[list[ChainState]] = None,
+    ) -> None:
         """
         Self-adapt proposal based on current state (optional).
 
@@ -89,6 +99,9 @@ class ProposalBase(ABC):
 
         Args:
             state: Current state containing metadata for adaptation.
+            samples: Optional history for adaptation.
+            force_adapt: Optional force-adaptation flag.
+            paired_samples: Optional history from a coupled chain.
         """
         pass
 
@@ -138,7 +151,7 @@ class AdapterBase(ABC):
         raise NotImplementedError("Subclasses must implement adapt()")
 
 
-class AdaptiveProposal:
+class AdaptiveProposal(ProposalBase):
     """
     Wrapper that applies an adapter to a base proposal.
 
@@ -167,12 +180,306 @@ class AdaptiveProposal:
 
     def __setattr__(self, name: str, value: Any) -> None:
         """Delegate attribute setting to wrapped proposal, except wrapper attributes."""
-        if name in ("proposal", "adapter"):
+        if name in ("proposal", "adapter") or "proposal" not in self.__dict__:
             super().__setattr__(name, value)
         else:
             setattr(self.proposal, name, value)
 
-    def adapt(self, state: ChainState) -> None:
+    def adapt(
+        self,
+        state: ChainState,
+        *,
+        samples: Optional[list[ChainState]] = None,
+        force_adapt: bool = False,
+        paired_samples: Optional[list[ChainState]] = None,
+    ) -> None:
         """Use the adapter to adapt the wrapped proposal."""
         self.adapter.adapt(self.proposal, state)
-        self.proposal.adapt(state)
+        self.proposal.adapt(
+            state,
+            samples=samples,
+            force_adapt=force_adapt,
+            paired_samples=paired_samples,
+        )
+
+    # Explicit delegation keeps this wrapper structurally compatible with protocols.
+    def sample(
+        self, current_state: ChainState, common_step: Optional[np.ndarray] = None
+    ) -> ChainState:
+        return self.proposal.sample(current_state, common_step)
+
+    def proposal_logpdf(
+        self, current_state: ChainState, proposed_state: ChainState
+    ) -> tuple[float, float]:
+        return self.proposal.proposal_logpdf(current_state, proposed_state)
+
+
+class TransportProposalBase(ProposalBase):
+    """
+    Base class for single-chain transport-aware proposals.
+
+    A transport proposal wraps a base proposal operating in reference space
+    and a transport map for moving between target and reference spaces.
+
+    Attributes:
+        proposal: Wrapped base proposal used in reference space.
+        map: Transport map with forward/inverse transforms.
+    """
+
+    def __init__(self, proposal: ProposalBase, map: TransportMap) -> None:
+        """
+        Initialize transport-aware proposal wrapper.
+
+        Args:
+            proposal: Base proposal operating in reference coordinates.
+            map: Transport map used for forward/inverse transforms.
+        """
+        self.proposal = proposal
+        self.map = map
+        self._cache = {}
+
+    def __getattr__(self, name: str) -> Any:
+        """Delegate unknown attributes to wrapped proposal."""
+        return getattr(self.proposal, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Delegate attribute setting to wrapped proposal, except wrapper attributes."""
+        if name in ("proposal", "map", "_cache") or "proposal" not in self.__dict__:
+            super().__setattr__(name, value)
+        else:
+            setattr(self.proposal, name, value)
+
+    def sample(
+        self, current_state: ChainState, common_step: Optional[np.ndarray] = None
+    ) -> ChainState:
+        """
+        Generate a candidate state using the transport-aware proposal.
+        1. Map current state to reference space: r = T(x)
+        2. Store log determinant for proposal correction: log |det(∇T^{-1}(r))| = -log |det(∇T(x))|
+        3. Sample in reference space using the wrapped proposal: r' ~ q(r' | r)
+        4. Map proposed reference state back to target space: x' = T^{-1}(r')
+        5. Store log determinant for reverse correction: log |det(∇T^{-1}(r'))|
+
+        Args:
+            current_state: Current state of the chain.
+            common_step: Optional common random variable for coupling.
+
+        Returns:
+            Proposed ChainState.
+        """
+        reference_position, log_det_forward = self.map.forward(current_state.position)
+        proposed_reference_state = self.proposal.sample(
+            ChainState(position=reference_position, metadata=current_state.metadata),
+            common_step,
+        )
+        proposed_position, log_det_reverse = self.map.inverse(
+            proposed_reference_state.position
+        )
+        self._cache["log_det_Tinv_current"] = -log_det_forward
+        self._cache["log_det_Tinv_proposed"] = log_det_reverse
+        return ChainState(
+            position=proposed_position,
+            reference_position=proposed_reference_state.position,
+            metadata=proposed_reference_state.metadata,
+        )
+
+    def proposal_logpdf(
+        self, current_state: ChainState, proposed_state: ChainState
+    ) -> tuple[float, float]:
+        """
+        Compute forward and reverse log probabilities with transport correction.
+
+        Args:
+            current_state: Current state of the chain.
+            proposed_state: Proposed state.
+
+        Returns:
+            Tuple of (logq_forward, logq_reverse) where:
+                - logq_forward: log q(proposed | current) = log q_r(r' | r) + log |det(∇T(x))|
+                - logq_reverse: log q(current | proposed) = log q(r | r') + log |det(∇T^{-1}(r'))|
+        """
+        if (
+            current_state.reference_position is None
+            or proposed_state.reference_position is None
+        ):
+            raise ValueError(
+                "reference_position must be set before calling proposal_logpdf"
+            )
+
+        logq_forward, logq_reverse = self.proposal.proposal_logpdf(
+            ChainState(
+                position=current_state.reference_position,
+                metadata=current_state.metadata,
+            ),
+            ChainState(
+                position=proposed_state.reference_position,
+                metadata=proposed_state.metadata,
+            ),
+        )
+        return (
+            logq_forward + self._cache["log_det_Tinv_current"],
+            logq_reverse + self._cache["log_det_Tinv_proposed"],
+        )
+
+    def adapt(
+        self,
+        state: ChainState,
+        *,
+        samples: Optional[list[ChainState]] = None,
+        force_adapt: bool = False,
+        paired_samples: Optional[list[ChainState]] = None,
+    ) -> None:
+        """
+        Adapt wrapped proposal and transport map.
+
+        Args:
+            state: Current chain state.
+            samples: Optional list of chain states for map adaptation.
+                     If not provided, uses `[state]`.
+            force_adapt: Bool to force adaptation.
+            paired_samples: Optional history from coupled chain. Used for
+                maps that require both chains during adaptation.
+        """
+        self.proposal.adapt(
+            state,
+            samples=samples,
+            force_adapt=force_adapt,
+            paired_samples=paired_samples,
+        )
+
+        history = samples if samples is not None else [state]
+        self.map.adapt(
+            history,
+            force_adapt=force_adapt,
+            paired_samples=paired_samples,
+        )
+
+    def save_map(self, output_dir: str, iteration: int) -> None:
+        """
+        Optional map checkpoint hook.
+
+        Delegates to map.checkpoint_model when available.
+        """
+        if hasattr(self.map, "checkpoint_model"):
+            self.map.checkpoint_model(f"{output_dir}/map_{iteration}")
+
+
+class CoupledProposalBase(ABC):
+    """
+    Abstract base class for coupled proposals.
+
+    A coupled proposal is composed of two single-chain proposals
+    (coarse and fine) and generates correlated candidates for both chains.
+    This lets kernels stay generic while coupling logic lives in proposals.
+
+    Attributes:
+        proposal_coarse: Coarse chain proposal. Can be any ProposalBase.
+        proposal_fine: Fine chain proposal. Can be any ProposalBase.
+    """
+
+    def __init__(
+        self,
+        proposal_coarse: ProposalBase,
+        proposal_fine: ProposalBase,
+    ) -> None:
+        """
+        Initialize coupled proposal from two single-chain proposals.
+
+        Args:
+            proposal_coarse: Proposal for the coarse chain.
+            proposal_fine: Proposal for the fine chain.
+        """
+        self.proposal_coarse = proposal_coarse
+        self.proposal_fine = proposal_fine
+
+    @abstractmethod
+    def sample_pair(
+        self,
+        coarse_state: ChainState,
+        fine_state: ChainState,
+    ) -> tuple[ChainState, ChainState]:
+        """
+        Generate coupled candidate states for coarse and fine chains.
+
+        Args:
+            coarse_state: Current state of the coarse chain.
+            fine_state: Current state of the fine chain.
+
+        Returns:
+            Tuple of (proposed_coarse_state, proposed_fine_state).
+        """
+        raise NotImplementedError("Subclasses must implement sample_pair()")
+
+    def proposal_logpdf_pair(
+        self,
+        current_coarse: ChainState,
+        proposed_coarse: ChainState,
+        current_fine: ChainState,
+        proposed_fine: ChainState,
+    ) -> tuple[tuple[float, float], tuple[float, float]]:
+        """
+        Compute per-chain forward/reverse proposal log densities.
+
+        Args:
+            current_coarse: Current coarse state.
+            proposed_coarse: Proposed coarse state.
+            current_fine: Current fine state.
+            proposed_fine: Proposed fine state.
+
+        Returns:
+            ((coarse_logq_forward, coarse_logq_reverse),
+             (fine_logq_forward, fine_logq_reverse)).
+        """
+        coarse_logq_forward, coarse_logq_reverse = self.proposal_coarse.proposal_logpdf(
+            current_coarse, proposed_coarse
+        )
+        fine_logq_forward, fine_logq_reverse = self.proposal_fine.proposal_logpdf(
+            current_fine, proposed_fine
+        )
+        return (coarse_logq_forward, coarse_logq_reverse), (
+            fine_logq_forward,
+            fine_logq_reverse,
+        )
+
+    def adapt_pair(
+        self,
+        coarse_state: ChainState,
+        fine_state: ChainState,
+        *,
+        samples: Optional[tuple[list[ChainState], list[ChainState]]] = None,
+        force_adapt: bool = False,
+    ) -> None:
+        """
+        Optional adaptation hook for coupled proposals.
+
+        Delegates adaptation to the two wrapped proposals.
+
+        Args:
+            coarse_state: Current coarse state.
+            fine_state: Current fine state.
+            samples: Optional tuple of (coarse_samples, fine_samples).
+                Passed through to proposals when provided.
+            force_adapt: Passed through to proposals.
+        """
+        coarse_samples = samples[0] if samples is not None else None
+        fine_samples = samples[1] if samples is not None else None
+
+        self.proposal_coarse.adapt(
+            coarse_state,
+            samples=coarse_samples,
+            force_adapt=force_adapt,
+            paired_samples=fine_samples,
+        )
+        self.proposal_fine.adapt(
+            fine_state,
+            samples=fine_samples,
+            force_adapt=force_adapt,
+            paired_samples=coarse_samples,
+        )
+
+
+# Compatibility alias used in several kernels/samplers.
+Proposal = ProposalBase
+ProposalProtocol = ProposalBase
+CoupledProposalProtocol = CoupledProposalBase
+TransportProposalProtocol = TransportProposalBase

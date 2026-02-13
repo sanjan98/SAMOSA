@@ -317,6 +317,9 @@ class PreCrankedNicholson(ProposalBase):
 
         Args:
             state: Current state with 'is_accepted' in metadata.
+            samples: Unused, included for interface compatibility.
+            force_adapt: Unused, included for interface compatibility.
+            paired_samples: Unused, included for interface compatibility.
         """
         is_accepted = (
             state.metadata.get("is_accepted", False)
