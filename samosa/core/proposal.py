@@ -35,15 +35,13 @@ class ProposalBase(ABC):
         self.cov = cov
 
     @abstractmethod
-    def sample(
-        self, current_state: ChainState, common_step: Optional[np.ndarray] = None
-    ) -> ChainState:
+    def sample(self, state: ChainState, eta: Optional[np.ndarray] = None) -> ChainState:
         """
         Generate a candidate state from the proposal distribution.
 
         Args:
-            current_state: Current state of the chain.
-            common_step: Optional common random variable for coupling.
+            state: Current state of the chain.
+            eta: Optional common random variable for coupling.
 
         Returns:
             Proposed ChainState.
@@ -52,14 +50,14 @@ class ProposalBase(ABC):
 
     @abstractmethod
     def proposal_logpdf(
-        self, current_state: ChainState, proposed_state: ChainState
+        self, current: ChainState, proposed: ChainState
     ) -> tuple[float, float]:
         """
         Compute forward and reverse log probabilities.
 
         Args:
-            current_state: Current state of the chain.
-            proposed_state: Proposed state.
+            current: Current state of the chain.
+            proposed: Proposed state.
 
         Returns:
             Tuple of (logq_forward, logq_reverse) where:
@@ -203,15 +201,13 @@ class AdaptiveProposal(ProposalBase):
         )
 
     # Explicit delegation keeps this wrapper structurally compatible with protocols.
-    def sample(
-        self, current_state: ChainState, common_step: Optional[np.ndarray] = None
-    ) -> ChainState:
-        return self.proposal.sample(current_state, common_step)
+    def sample(self, state: ChainState, eta: Optional[np.ndarray] = None) -> ChainState:
+        return self.proposal.sample(state, eta)
 
     def proposal_logpdf(
-        self, current_state: ChainState, proposed_state: ChainState
+        self, state: ChainState, proposed: ChainState
     ) -> tuple[float, float]:
-        return self.proposal.proposal_logpdf(current_state, proposed_state)
+        return self.proposal.proposal_logpdf(state, proposed)
 
 
 class TransportProposalBase(ProposalBase):
@@ -249,9 +245,7 @@ class TransportProposalBase(ProposalBase):
         else:
             setattr(self.proposal, name, value)
 
-    def sample(
-        self, current_state: ChainState, common_step: Optional[np.ndarray] = None
-    ) -> ChainState:
+    def sample(self, state: ChainState, eta: Optional[np.ndarray] = None) -> ChainState:
         """
         Generate a candidate state using the transport-aware proposal.
         1. Map current state to reference space: r = T(x)
@@ -261,61 +255,58 @@ class TransportProposalBase(ProposalBase):
         5. Store log determinant for reverse correction: log |det(∇T^{-1}(r'))|
 
         Args:
-            current_state: Current state of the chain.
-            common_step: Optional common random variable for coupling.
+            state: Current state of the chain.
+            eta: Optional common random variable for coupling.
 
         Returns:
             Proposed ChainState.
         """
-        reference_position, log_det_forward = self.map.forward(current_state.position)
+        reference_position, log_det_forward = self.map.forward(state.position)
         proposed_reference_state = self.proposal.sample(
-            ChainState(position=reference_position, metadata=current_state.metadata),
-            common_step,
+            ChainState(position=reference_position, metadata=state.metadata),
+            eta,
         )
         proposed_position, log_det_reverse = self.map.inverse(
             proposed_reference_state.position
         )
-        self._cache["current_position"] = np.array(current_state.position, copy=True)
+        self._cache["current_position"] = np.array(state.position, copy=True)
         self._cache["proposed_position"] = np.array(proposed_position, copy=True)
         self._cache["log_det_Tinv_current"] = -log_det_forward
         self._cache["log_det_Tinv_proposed"] = log_det_reverse
         return ChainState(
             position=proposed_position,
             reference_position=proposed_reference_state.position,
-            metadata=current_state.metadata.copy() if current_state.metadata else {},
+            metadata=state.metadata.copy() if state.metadata else {},
         )
 
     def proposal_logpdf(
-        self, current_state: ChainState, proposed_state: ChainState
+        self, state: ChainState, proposed: ChainState
     ) -> tuple[float, float]:
         """
         Compute forward and reverse log probabilities with transport correction.
 
         Args:
-            current_state: Current state of the chain.
-            proposed_state: Proposed state.
+            state: Current state of the chain.
+            proposed: Proposed state.
 
         Returns:
             Tuple of (logq_forward, logq_reverse) where:
                 - logq_forward: log q(proposed | current) = log q_r(r' | r) + log |det(∇T(x))|
                 - logq_reverse: log q(current | proposed) = log q(r | r') + log |det(∇T^{-1}(r'))|
         """
-        if (
-            current_state.reference_position is None
-            or proposed_state.reference_position is None
-        ):
+        if state.reference_position is None or proposed.reference_position is None:
             raise ValueError(
                 "reference_position must be set before calling proposal_logpdf"
             )
 
         logq_forward, logq_reverse = self.proposal.proposal_logpdf(
             ChainState(
-                position=current_state.reference_position,
-                metadata=current_state.metadata,
+                position=state.reference_position,
+                metadata=state.metadata,
             ),
             ChainState(
-                position=proposed_state.reference_position,
-                metadata=proposed_state.metadata,
+                position=proposed.reference_position,
+                metadata=proposed.metadata,
             ),
         )
 
@@ -326,17 +317,15 @@ class TransportProposalBase(ProposalBase):
                 "log_det_Tinv_current",
                 "log_det_Tinv_proposed",
             }.issubset(self._cache)
-            and np.array_equal(self._cache["current_position"], current_state.position)
-            and np.array_equal(
-                self._cache["proposed_position"], proposed_state.position
-            )
+            and np.array_equal(self._cache["current_position"], state.position)
+            and np.array_equal(self._cache["proposed_position"], proposed.position)
         )
         if use_cache:
             log_det_tinv_current = self._cache["log_det_Tinv_current"]
             log_det_tinv_proposed = self._cache["log_det_Tinv_proposed"]
         else:
-            _, log_det_forward_current = self.map.forward(current_state.position)
-            _, log_det_forward_proposed = self.map.forward(proposed_state.position)
+            _, log_det_forward_current = self.map.forward(state.position)
+            _, log_det_forward_proposed = self.map.forward(proposed.position)
             log_det_tinv_current = -log_det_forward_current
             log_det_tinv_proposed = -log_det_forward_proposed
 
@@ -347,17 +336,17 @@ class TransportProposalBase(ProposalBase):
 
     def adapt(
         self,
-        state: ChainState,
+        current: ChainState,
         *,
         samples: Optional[list[ChainState]] = None,
-        force_adapt: bool = False,
+        force_adapt: Optional[bool] = False,
         paired_samples: Optional[list[ChainState]] = None,
     ) -> None:
         """
         Adapt wrapped proposal and transport map.
 
         Args:
-            state: Current chain state.
+            current: Current chain state.
             samples: Optional list of chain states for map adaptation.
                      If not provided, uses `[state]`.
             force_adapt: Bool to force adaptation.
@@ -365,13 +354,13 @@ class TransportProposalBase(ProposalBase):
                 maps that require both chains during adaptation.
         """
         self.proposal.adapt(
-            state,
+            current,
             samples=samples,
             force_adapt=force_adapt,
             paired_samples=paired_samples,
         )
 
-        history = samples if samples is not None else [state]
+        history = samples if samples is not None else [current]
         self.map.adapt(
             history,
             force_adapt=force_adapt,

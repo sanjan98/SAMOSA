@@ -2,83 +2,79 @@
 Class file for the Metropolis-Hastings kernel
 """
 
-# Imports
+from __future__ import annotations
 import numpy as np
 from samosa.core.state import ChainState
-from samosa.core.kernel import KernelProtocol
-from samosa.core.proposal import ProposalProtocol
-from samosa.core.model import ModelProtocol
+from samosa.core.proposal import Proposal
+from samosa.core.model import Model
+from samosa.core.kernel import _marginal_mh_acceptance_ratio
+from typing import Optional
 
-class MetropolisHastingsKernel(KernelProtocol):
+
+class MetropolisHastingsKernel:
     """
     Metropolis-Hastings kernel for MCMC sampling.
     """
 
-    def __init__(self, model: ModelProtocol):
+    def __init__(self, model: Model, proposal: Proposal) -> None:
         """
         Initialize the Metropolis-Hastings kernel with a model.
         """
         self.model = model
+        if not isinstance(model, Model):
+            raise ValueError("model must be an instance of Model")
+        self.proposal = proposal
+        if not isinstance(proposal, Proposal):
+            raise ValueError("proposal must be an instance of Proposal")
 
-    def propose(self, proposal: ProposalProtocol, current_state: ChainState) -> ChainState:
+    def propose(self, state: ChainState) -> ChainState:
         """
-        Generate a candidate state from the current state using the proposal.
+        Generate candidate state from current state. Returns proposed state.
 
-        Parameters:
-            proposal: Proposal distribution
-            current_state: Current state of the chain
+        Args:
+            state: Current state of the chain.
+
         Returns:
-            proposed_state: Proposed state
+            Proposed state of the chain.
         """
-        # Sample a new state using the proposal
-        proposed_position = proposal.sample(current_state).position
-        
-        # Compute the attributes of the proposed state
-        model_result = self.model(proposed_position)
+        proposed = self.proposal.sample(state)
+        model_result = self.model(proposed.position)
+        proposed_state = ChainState(
+            position=proposed.position,
+            reference_position=proposed.reference_position,
+            **model_result,
+            metadata=state.metadata.copy() if state.metadata is not None else None,
+        )
+        return proposed_state
 
-        # Create a new ChainState object for the proposed state
-        proposed_state = ChainState(position=proposed_position, **model_result, metadata=current_state.metadata.copy())
-        
-        return proposed_state, current_state
-    
-    def acceptance_ratio(self, proposal: ProposalProtocol, current: ChainState, proposed: ChainState) -> float:
-        """
-        Compute the log acceptance probability for the proposed state.
+    def acceptance_ratio(self, current: ChainState, proposed: ChainState) -> float:
+        """Compute acceptance probability for the proposed state.
 
-        Parameters:
-            proposal: Proposal distribution
-            current: Current state of the chain
-            proposed: Proposed state of the chain
+        Args:
+            current: Current state of the chain.
+            proposed: Proposed state of the chain.
+
         Returns:
-            ar: Acceptance ratio
+            Acceptance probability for the proposed state.
         """
-        logq_forward, logq_reverse = proposal.proposal_logpdf(current, proposed)
-        
-        # Calculate the acceptance ratio
-        check = (proposed.log_posterior + logq_reverse) - (current.log_posterior + logq_forward)
-        if check > 0:
-            ar = 1.0
-        else:
-            ar = np.exp(check)
-
-        # Calculate the acceptance ratio
+        logq_forward, logq_reverse = self.proposal.proposal_logpdf(current, proposed)
+        lpc = current.log_posterior if current.log_posterior is not None else -np.inf
+        lppc = proposed.log_posterior if proposed.log_posterior is not None else -np.inf
+        ar = _marginal_mh_acceptance_ratio(lpc, lppc, logq_forward, logq_reverse)
         return ar
-    
-    def adapt(self, proposal: ProposalProtocol, proposed: ChainState) -> None:
+
+    def adapt(
+        self,
+        proposed: ChainState,
+        *,
+        samples: Optional[list[ChainState]] = None,
+        force_adapt: Optional[bool] = False,
+    ) -> None:
+        """Adapt the proposal based on the proposed state.
+
+        Args:
+            proposed: Proposed state of the chain.
+            samples: Optional list of samples from the chain.
+            force_adapt: Optional force-adaptation flag.
         """
-        Adapt the proposal based on the proposed state.
-
-        Parameters:
-            proposal: Proposal distribution
-            proposed: Proposed state of the chain
-        Returns:
-            None
-        """
-
-        # Check if the proposal has an adapt method
-        if hasattr(proposal, 'adapt'):
-            proposal.adapt(proposed)
-
-        return None
-
-    
+        self.proposal.adapt(proposed, samples=samples, force_adapt=force_adapt)

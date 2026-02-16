@@ -1,22 +1,27 @@
 """
-Class file for a single chain MCMC sampler.
+Single-chain MCMC sampler.
+
+Orchestrates a single-fidelity kernel and proposal to run one chain;
+supports MH-style and delayed-rejection kernels.
 """
+
+import copy
+import os
+import pickle
+from typing import List, Optional
+
+import numpy as np
 
 from samosa.core.state import ChainState
 from samosa.core.kernel import KernelProtocol
-from samosa.core.proposal import ProposalProtocol
+from samosa.core.proposal import ProposalBase
 from samosa.kernels.delayedrejection import DelayedRejectionKernel
-from typing import List, Optional
-import numpy as np
-import os
-import copy
 
-import pickle
 
-class MCMCsampler:
+class SingleChainSampler:
     """
     Class for a single chain MCMC sampler.
-    
+
     Attributes:
         kernel (TransitionKernel): The transition kernel used for sampling.
         proposal (Proposal): The proposal distribution used for generating candidate states.
@@ -27,8 +32,17 @@ class MCMCsampler:
         save_iteration (int): Number of iterations between saves.
         restart (list): List of states to restart the chain from.
     """
-    
-    def __init__(self, kernel: KernelProtocol, proposal: ProposalProtocol, initial_position: np.ndarray, n_iterations: int, print_iteration: Optional[int] = None, save_iteration: Optional[int] = None, restart: List[ChainState] = None):
+
+    def __init__(
+        self,
+        kernel: KernelProtocol,
+        proposal: ProposalBase,
+        initial_position: np.ndarray,
+        n_iterations: int,
+        print_iteration: Optional[int] = None,
+        save_iteration: Optional[int] = None,
+        restart: Optional[List[ChainState]] = None,
+    ) -> None:
 
         dim = initial_position.shape[0]
         self.dim = dim
@@ -39,16 +53,22 @@ class MCMCsampler:
 
         if self.restart is not None:
             self.initial_state = self.restart[-1]
-            self.start_iteration = self.restart[-1].metadata['iteration'] + 1
+            self.start_iteration = self.restart[-1].metadata["iteration"] + 1
         else:
-            self.initial_state = ChainState(position=initial_position, **self.model(initial_position), metadata={
-                'covariance': proposal.sigma if hasattr(proposal, 'sigma') else proposal.proposal.sigma,
-                'mean': initial_position,
-                'lambda': 2.4**2 / dim,
-                'acceptance_probability': 0.0,
-                'is_accepted': False,
-                'iteration': 1
-                })
+            self.initial_state = ChainState(
+                position=initial_position,
+                **self.model(initial_position),
+                metadata={
+                    "covariance": proposal.sigma
+                    if hasattr(proposal, "sigma")
+                    else proposal.proposal.sigma,
+                    "mean": initial_position,
+                    "lambda": 2.4**2 / dim,
+                    "acceptance_probability": 0.0,
+                    "is_accepted": False,
+                    "iteration": 1,
+                },
+            )
             self.start_iteration = 1
 
         self.n_iterations = n_iterations
@@ -57,10 +77,9 @@ class MCMCsampler:
         self.is_delayed_rejection = isinstance(kernel, DelayedRejectionKernel)
 
     def run(self, output_dir: str) -> None:
-
         """
         Run the MCMC sampler for a specified number of iterations.
-        
+
         Parameters:
         ----------
             output_dir (str): Directory to save the chain states.
@@ -72,7 +91,7 @@ class MCMCsampler:
         """
 
         os.makedirs(output_dir, exist_ok=True)
-        
+
         # Initialize the chain state
         current_state = self.initial_state
         if self.restart is not None:
@@ -82,14 +101,15 @@ class MCMCsampler:
         acceptance_count = 0
 
         # Run the MCMC sampling loop
-        for i in range(self.start_iteration, self.n_iterations+1):
-
+        for i in range(self.start_iteration, self.n_iterations + 1):
             if self.print_iteration is not None and i % self.print_iteration == 0:
                 print(f"Iteration {i}/{self.n_iterations}")
 
             # Check for delayed rejection kernel
             if self.is_delayed_rejection:
-                proposed_state, current_state = self.kernel.propose(self.proposal, current_state)
+                proposed_state, current_state = self.kernel.propose(
+                    self.proposal, current_state
+                )
 
                 # Check if state was changed
                 if proposed_state is not current_state:
@@ -98,19 +118,22 @@ class MCMCsampler:
                 else:
                     is_accepted = False
 
-                ar = getattr(self.kernel, 'ar', 0.0)
+                ar = getattr(self.kernel, "ar", 0.0)
 
                 # Update the next state
                 current_state = proposed_state
 
             # Matropolis-Hastings kernel
             else:
-
                 # Propose a new state
-                proposed_state, current_state = self.kernel.propose(self.proposal, current_state) # Metadata is copied from current_state
+                proposed_state, current_state = self.kernel.propose(
+                    self.proposal, current_state
+                )  # Metadata is copied from current_state
 
                 # Compute the acceptance ratio
-                ar = self.kernel.acceptance_ratio(self.proposal, current_state, proposed_state)
+                ar = self.kernel.acceptance_ratio(
+                    self.proposal, current_state, proposed_state
+                )
 
                 # Accept or reject the proposed state
                 if ar == 1 or np.random.rand() < ar:
@@ -121,15 +144,15 @@ class MCMCsampler:
                     is_accepted = False
 
             # Update the metadata for the proposed state
-            current_state.metadata['iteration'] = i
-            current_state.metadata['acceptance_probability'] = ar
-            current_state.metadata['is_accepted'] = is_accepted
+            current_state.metadata["iteration"] = i
+            current_state.metadata["acceptance_probability"] = ar
+            current_state.metadata["is_accepted"] = is_accepted
 
             # Adapt the proposal distribution
             self.kernel.adapt(self.proposal, current_state)
 
             # Adapt the transport map
-            if hasattr(self.kernel, 'adapt_map') and i > 1:
+            if hasattr(self.kernel, "adapt_map") and i > 1:
                 self.kernel.adapt_map(samples[:i])
 
             # Store the current state
@@ -141,20 +164,26 @@ class MCMCsampler:
                     pickle.dump(samples, f)
                 print(f"Saved samples at iteration {i} to {output_dir}/samples_{i}.pkl")
 
-                if hasattr(self.kernel, 'save_map'):
+                if hasattr(self.kernel, "save_map"):
                     self.kernel.save_map(output_dir, i)
 
         # Save the samples to a file
         with open(f"{output_dir}/samples.pkl", "wb") as f:
             pickle.dump(samples, f)
-     
+
         # Save the final map if applicable
-        if hasattr(self.kernel, 'save_map'):
+        if hasattr(self.kernel, "save_map"):
             self.kernel.save_map(output_dir, self.n_iterations)
-        
+
         # Save the acceptance rate
         if self.start_iteration > 1:
-            acceptance_rate = acceptance_count / (self.n_iterations - self.start_iteration + 1)
+            acceptance_rate = acceptance_count / (
+                self.n_iterations - self.start_iteration + 1
+            )
         else:
             acceptance_rate = acceptance_count / self.n_iterations
         return acceptance_rate
+
+
+# Backward compatibility
+MCMCsampler = SingleChainSampler

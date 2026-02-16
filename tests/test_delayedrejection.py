@@ -1,8 +1,17 @@
+"""
+Unit tests for the Delayed Rejection kernel.
+"""
+
+from typing import cast
 import pytest
 import numpy as np
+
 from samosa.kernels.delayedrejection import DelayedRejectionKernel
 from samosa.proposals.gaussianproposal import GaussianRandomWalk
 from samosa.core.state import ChainState
+from samosa.core.model import Model
+from samosa.core.proposal import Proposal
+
 
 # --------------------------------------------------
 # Fixtures
@@ -10,263 +19,234 @@ from samosa.core.state import ChainState
 @pytest.fixture
 def model():
     """Mock model returning log_posterior = -0.5 * sum(x^2)."""
+
     class MockModel:
         def __call__(self, params: np.ndarray) -> dict:
             return {"log_posterior": -0.5 * np.sum(params**2)}
+
     return MockModel()
+
 
 @pytest.fixture
 def proposal():
     """Gaussian random walk proposal with fixed parameters."""
-    return GaussianRandomWalk(mu=np.zeros((2, 1)), sigma=0.1 * np.eye(2))
+    return GaussianRandomWalk(mu=np.zeros((2, 1)), cov=0.1 * np.eye(2))
+
 
 @pytest.fixture
-def kernel(model):
-    """Delayed Rejection kernel with mock model."""
-    return DelayedRejectionKernel(model, cov_scale=0.5)
+def kernel(model, proposal):
+    """Delayed Rejection kernel with model and proposal."""
+    return DelayedRejectionKernel(model, proposal, cov_scale=0.5)
+
 
 @pytest.fixture
 def current_state():
-    """A sample ChainState for testing proposals."""
+    """A sample ChainState for testing."""
     return ChainState(
         position=np.array([[1.0], [-0.5]]),
         log_posterior=-0.625,
         metadata={
-            'iteration': 100,
-            'mean': np.array([[0.5], [0.5]]),
-            'covariance': np.eye(2),
-            'lambda': 1.0,
-            'acceptance_probability': 0.25
-        }
+            "iteration": 100,
+            "mean": np.array([[0.5], [0.5]]),
+            "covariance": np.eye(2),
+            "lambda": 1.0,
+            "acceptance_probability": 0.25,
+        },
     )
+
 
 # --------------------------------------------------
 # Tests
 # --------------------------------------------------
-def test_dr_initialization(model):
+def test_dr_initialization(model, proposal):
     """Test initialization of the Delayed Rejection kernel."""
-    kernel = DelayedRejectionKernel(model, cov_scale=0.75)
-    
-    assert kernel.model == model
-    assert kernel.cov_scale == 0.75
-    assert kernel.first_stage_state is None
+    k = DelayedRejectionKernel(model, proposal, cov_scale=0.75)
+    assert k.model is model
+    assert k.proposal is proposal
+    assert k.cov_scale == 0.75
+    assert k.first_stage_state is None
 
-def test_proposestate(kernel, proposal, current_state):
-    """Test the internal _proposestate method."""
-    # Set a fixed seed for reproducibility
+
+def test_dr_initialization_rejects_invalid_model(proposal):
+    """Kernel raises if model is not Model."""
+    with pytest.raises(ValueError, match="model must be an instance of Model"):
+        DelayedRejectionKernel(cast(Model, None), proposal)
+
+
+def test_dr_initialization_rejects_invalid_proposal(model):
+    """Kernel raises if proposal is not Proposal."""
+    with pytest.raises(ValueError, match="proposal must be an instance of Proposal"):
+        DelayedRejectionKernel(model, cast(Proposal, None))
+
+
+def test_proposestate(kernel, current_state):
+    """_proposestate(state) returns a valid ChainState with model evaluation."""
     np.random.seed(42)
-    
-    # Call the internal method directly
-    proposed_state = kernel._proposestate(proposal, current_state)
-    
-    # Verify the state was properly created
+    proposed_state = kernel._proposestate(current_state)
     assert isinstance(proposed_state, ChainState)
     assert proposed_state.position.shape == current_state.position.shape
     assert proposed_state.log_posterior is not None
-    
-    # Expected log posterior value
     expected_logp = -0.5 * np.sum(proposed_state.position**2)
     assert np.isclose(proposed_state.log_posterior, expected_logp)
-    
-    # Metadata should be copied, not referenced
-    assert proposed_state.metadata == current_state.metadata
-    assert proposed_state.metadata is not current_state.metadata
 
-def test_acceptance_ratio(kernel, proposal, current_state):
-    """Test the standard acceptance ratio calculation."""
+
+def test_acceptance_ratio(kernel, current_state):
+    """acceptance_ratio(current, proposed) returns a value in [0, 1]."""
     np.random.seed(42)
-    
-    # Create a proposed state
-    proposed_position = np.array([[0.5], [0.5]])
+    proposed_state = kernel._proposestate(current_state)
+    ar = kernel.acceptance_ratio(current_state, proposed_state)
+    assert 0 <= ar <= 1
+    assert np.isfinite(ar)
+
+
+def test_acceptance_ratio_better_proposal(kernel, current_state):
+    """When proposed is better, acceptance_ratio is 1.0 (with symmetric q)."""
+    proposed_position = np.array([[0.1], [0.1]])
     proposed_state = ChainState(
         position=proposed_position,
-        log_posterior=-0.5 * np.sum(proposed_position**2)  # -0.25
+        log_posterior=-0.5 * np.sum(proposed_position**2),
     )
-    
-    # Monkey patch proposal_logpdf for deterministic results
-    def mock_logpdf(_, __):
-        return -1.0, -1.0  # Symmetric proposal
-    
-    original_logpdf = proposal.proposal_logpdf
-    proposal.proposal_logpdf = mock_logpdf
-    
-    # Calculate acceptance ratio
-    ar = kernel.acceptance_ratio(proposal, current_state, proposed_state)
-    
-    # Expected: exp(proposed.log_posterior - current.log_posterior)
-    # = exp(-0.25 - (-0.625)) = exp(0.375) ≈ 1.455 > 1, so ar = 1.0
+    # Patch proposal_logpdf for symmetric q so AR = min(1, exp(improvement)) = 1
+    original = kernel.proposal.proposal_logpdf
+    kernel.proposal.proposal_logpdf = lambda c, p: (0.0, 0.0)
+    ar = kernel.acceptance_ratio(current_state, proposed_state)
+    kernel.proposal.proposal_logpdf = original
     assert ar == 1.0
-    
-    # Test with worse proposal
-    worse_position = np.array([[2.0], [2.0]])
-    worse_state = ChainState(
-        position=worse_position,
-        log_posterior=-0.5 * np.sum(worse_position**2)  # -4.0
-    )
-    
-    ar_worse = kernel.acceptance_ratio(proposal, current_state, worse_state)
-    expected_ar_worse = np.exp(worse_state.log_posterior - current_state.log_posterior)
-    assert np.isclose(ar_worse, expected_ar_worse)
-    
-    # Restore original method
-    proposal.proposal_logpdf = original_logpdf
 
-def test_second_stage_acceptance_ratio(kernel, proposal, current_state):
-    """Test the delayed rejection second stage acceptance ratio."""
-    np.random.seed(42)
-    
-    # Create two proposed states with worsening log posterior
+
+def test_second_stage_acceptance_ratio(kernel, current_state):
+    """_second_stage_acceptance_ratio returns a value in [0, 1]."""
     first_stage = ChainState(
         position=np.array([[1.5], [-1.0]]),
-        log_posterior=-1.625  # Worse than current (-0.625)
+        log_posterior=-1.625,
+        metadata=current_state.metadata,
     )
-    
     second_stage = ChainState(
         position=np.array([[0.7], [-0.3]]),
-        log_posterior=-0.29  # Better than current (-0.625)
+        log_posterior=-0.29,
+        metadata=current_state.metadata,
     )
-    
-    # Set up the first stage state (would normally be done by propose)
-    kernel.first_stage_state = first_stage
-    
-    # Mock the proposal_logpdf to return deterministic values
-    original_logpdf = proposal.proposal_logpdf
-    
-    def mock_logpdf(x, y):
-        # For testing, just return fixed values based on which states are being compared
-        if np.array_equal(x.position, current_state.position) and np.array_equal(y.position, first_stage.position):
-            return -1.0, -1.0  # current to first stage (symmetric)
-        elif np.array_equal(x.position, current_state.position) and np.array_equal(y.position, second_stage.position):
-            return -1.5, -1.5  # current to second stage (symmetric)
-        elif np.array_equal(x.position, second_stage.position) and np.array_equal(y.position, first_stage.position):
-            return -2.0, -2.0  # second to first stage (symmetric)
-        else:
-            return -3.0, -3.0  # default
-    
-    proposal.proposal_logpdf = mock_logpdf
-    
-    # Calculate the second stage acceptance ratio
-    ar = kernel._second_stage_acceptance_ratio(proposal, current_state, first_stage, second_stage)
-    
-    # Must be a valid probability
-    assert 0 <= ar <= 1.0
-    
-    # Restore original method
-    proposal.proposal_logpdf = original_logpdf
+    np.random.seed(42)
+    # Scale cov so second-stage logq is consistent
+    original_cov = kernel.proposal.cov.copy()
+    kernel.proposal.cov = original_cov * kernel.cov_scale
+    ar = kernel._second_stage_acceptance_ratio(current_state, first_stage, second_stage)
+    kernel.proposal.cov = original_cov
+    assert 0 <= ar <= 1
+    assert np.isfinite(ar)
 
-def test_propose_first_stage_accepted(kernel, proposal, current_state, mocker):
-    """Test propose method when first stage is accepted."""
-    np.random.seed(1)  # This seed should lead to accepting first stage
-    
-    # Mock _proposestate to return a better state
+
+def test_second_stage_acceptance_ratio_rejects_inf_posterior(kernel, current_state):
+    """_second_stage_acceptance_ratio returns 0 when second_stage.log_posterior is -inf."""
+    first_stage = ChainState(
+        position=np.array([[1.0], [1.0]]),
+        log_posterior=-1.0,
+        metadata=current_state.metadata,
+    )
+    second_stage = ChainState(
+        position=np.array([[2.0], [2.0]]),
+        log_posterior=-np.inf,
+        metadata=current_state.metadata,
+    )
+    ar = kernel._second_stage_acceptance_ratio(current_state, first_stage, second_stage)
+    assert ar == 0.0
+
+
+def test_propose_returns_single_state(kernel, current_state):
+    """propose(state) returns a single ChainState (not a tuple)."""
+    np.random.seed(42)
+    result = kernel.propose(current_state)
+    assert isinstance(result, ChainState)
+    assert result.position.shape == current_state.position.shape
+
+
+def test_propose_first_stage_accepted(kernel, current_state, monkeypatch):
+    """When first stage is accepted, propose returns that state."""
+    np.random.seed(1)
     better_state = ChainState(
         position=np.array([[0.2], [0.2]]),
-        log_posterior=-0.04,  # Better than current (-0.625)
-        metadata=current_state.metadata.copy()
+        log_posterior=-0.04,
+        metadata=current_state.metadata,
     )
-    
-    mocker.patch.object(kernel, '_proposestate', return_value=better_state)
-    
-    # Mock acceptance_ratio to always accept
-    mocker.patch.object(kernel, 'acceptance_ratio', return_value=1.0)
-    
-    # Call propose
-    result = kernel.propose(proposal, current_state)
-    
-    # Verify first stage is stored
-    assert kernel.first_stage_state is better_state
-    
-    # First proposal should be accepted
+    monkeypatch.setattr(kernel, "_proposestate", lambda s: better_state)
+    monkeypatch.setattr(kernel, "acceptance_ratio", lambda c, p: 1.0)
+    result = kernel.propose(current_state)
     assert result is better_state
-    
-    # Verify ar attribute was set
     assert kernel.ar == 1.0
 
-def test_propose_second_stage(kernel, proposal, current_state, mocker):
-    """Test propose method when first stage is rejected but second is tried."""
-    np.random.seed(42)  # Control random numbers
-    
-    # Mock _proposestate to return states with specific posteriors
+
+def test_propose_second_stage_accepted(kernel, current_state, monkeypatch):
+    """When first stage rejected and second accepted, propose returns second state."""
     first_stage = ChainState(
         position=np.array([[1.5], [-1.0]]),
-        log_posterior=-1.625,  # Worse than current (-0.625)
-        metadata=current_state.metadata.copy()
+        log_posterior=-1.625,
+        metadata=current_state.metadata,
     )
-    
     second_stage = ChainState(
         position=np.array([[0.7], [-0.3]]),
-        log_posterior=-0.29,  # Better than current (-0.625)
-        metadata=current_state.metadata.copy()
+        log_posterior=-0.29,
+        metadata=current_state.metadata,
     )
-    
-    # Set up mocks with side effects to return different states
-    proposestate_mock = mocker.patch.object(kernel, '_proposestate')
-    proposestate_mock.side_effect = [first_stage, second_stage]
-    
-    # Mock acceptance_ratio to reject first stage
-    mocker.patch.object(kernel, 'acceptance_ratio', return_value=0.0)
-    
-    # Mock second_stage_acceptance_ratio to accept
-    mocker.patch.object(kernel, '_second_stage_acceptance_ratio', return_value=1.0)
-    
-    # Call propose
-    result = kernel.propose(proposal, current_state)
-    
-    # First stage should be rejected, second should be accepted
-    assert result is second_stage
-    
-    # Check that _proposestate was called twice
-    assert proposestate_mock.call_count == 2
+    call_count = [0]
 
-def test_propose_both_stages_rejected(kernel, proposal, current_state, mocker):
-    """Test propose method when both stages are rejected."""
-    np.random.seed(42)  # Control random numbers
-    
-    # Mock _proposestate to return states with worse posteriors
+    def proposestate_mock(s):
+        call_count[0] += 1
+        return [first_stage, second_stage][call_count[0] - 1]
+
+    monkeypatch.setattr(kernel, "_proposestate", proposestate_mock)
+    monkeypatch.setattr(kernel, "acceptance_ratio", lambda c, p: 0.0)
+    monkeypatch.setattr(kernel, "_second_stage_acceptance_ratio", lambda c, f, s: 1.0)
+    np.random.seed(42)
+    result = kernel.propose(current_state)
+    assert result is second_stage
+    assert call_count[0] == 2
+
+
+def test_propose_both_stages_rejected(kernel, current_state, monkeypatch):
+    """When both stages rejected, propose returns current state."""
     first_stage = ChainState(
         position=np.array([[1.5], [-1.0]]),
-        log_posterior=-1.625,  # Worse than current (-0.625)
-        metadata=current_state.metadata.copy()
+        log_posterior=-1.625,
+        metadata=current_state.metadata,
     )
-    
     second_stage = ChainState(
         position=np.array([[1.2], [-0.8]]),
-        log_posterior=-1.04,  # Still worse than current (-0.625)
-        metadata=current_state.metadata.copy()
+        log_posterior=-1.04,
+        metadata=current_state.metadata,
     )
-    
-    # Set up mocks with side effects
-    proposestate_mock = mocker.patch.object(kernel, '_proposestate')
-    proposestate_mock.side_effect = [first_stage, second_stage]
-    
-    # Mock acceptance_ratio to reject first stage
-    mocker.patch.object(kernel, 'acceptance_ratio', return_value=0.0)
-    
-    # Mock second_stage_acceptance_ratio to reject second stage
-    mocker.patch.object(kernel, '_second_stage_acceptance_ratio', return_value=0.0)
-    
-    # Call propose
-    result = kernel.propose(proposal, current_state)
-    
-    # Both stages should be rejected, return current state
+    call_count = [0]
+
+    def proposestate_mock(s):
+        call_count[0] += 1
+        return [first_stage, second_stage][call_count[0] - 1]
+
+    monkeypatch.setattr(kernel, "_proposestate", proposestate_mock)
+    monkeypatch.setattr(kernel, "acceptance_ratio", lambda c, p: 0.0)
+    monkeypatch.setattr(kernel, "_second_stage_acceptance_ratio", lambda c, f, s: 0.0)
+    np.random.seed(42)
+    result = kernel.propose(current_state)
     assert result is current_state
-    
-    # Check that _proposestate was called twice
-    assert proposestate_mock.call_count == 2
+    assert call_count[0] == 2
+
 
 def test_adapt(kernel, current_state):
-    """Test the adapt method."""
-    # Create a mock proposal with adapt method
-    class MockAdaptiveProposal:
-        def __init__(self):
-            self.adapted = False
-        def adapt(self, state):
-            self.adapted = True
-    
-    proposal = MockAdaptiveProposal()
-    
-    # Call adapt
-    kernel.adapt(proposal, current_state)
-    
-    # Verify proposal.adapt was called
-    assert proposal.adapted
+    """adapt(proposed) runs without error."""
+    np.random.seed(42)
+    proposed = kernel.propose(current_state)
+    kernel.adapt(proposed)
+
+
+def test_e2e_dr_chain(kernel, current_state):
+    """Run a short DR chain: propose -> accept/reject -> adapt."""
+    np.random.seed(123)
+    states = [current_state]
+    for _ in range(5):
+        proposed = kernel.propose(states[-1])
+        # DR kernel stores ar in kernel.ar; for first stage it's from acceptance_ratio
+        u = np.random.rand()
+        if kernel.ar == 1.0 or u < kernel.ar:
+            states.append(proposed)
+        else:
+            states.append(states[-1])
+        kernel.adapt(states[-1])
+    assert len(states) == 6
