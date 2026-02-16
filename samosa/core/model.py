@@ -111,3 +111,6 @@ def validate_model_output(output: Dict[str, Any]) -> None:
             f"Cannot mix 'log_posterior' with component specifications. "
             f"Got: {list(output.keys())}"
         )
+
+
+Model = ModelProtocol

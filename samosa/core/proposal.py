@@ -275,12 +275,14 @@ class TransportProposalBase(ProposalBase):
         proposed_position, log_det_reverse = self.map.inverse(
             proposed_reference_state.position
         )
+        self._cache["current_position"] = np.array(current_state.position, copy=True)
+        self._cache["proposed_position"] = np.array(proposed_position, copy=True)
         self._cache["log_det_Tinv_current"] = -log_det_forward
         self._cache["log_det_Tinv_proposed"] = log_det_reverse
         return ChainState(
             position=proposed_position,
             reference_position=proposed_reference_state.position,
-            metadata=proposed_reference_state.metadata,
+            metadata=current_state.metadata.copy() if current_state.metadata else {},
         )
 
     def proposal_logpdf(
@@ -316,9 +318,31 @@ class TransportProposalBase(ProposalBase):
                 metadata=proposed_state.metadata,
             ),
         )
+
+        use_cache = (
+            {
+                "current_position",
+                "proposed_position",
+                "log_det_Tinv_current",
+                "log_det_Tinv_proposed",
+            }.issubset(self._cache)
+            and np.array_equal(self._cache["current_position"], current_state.position)
+            and np.array_equal(
+                self._cache["proposed_position"], proposed_state.position
+            )
+        )
+        if use_cache:
+            log_det_tinv_current = self._cache["log_det_Tinv_current"]
+            log_det_tinv_proposed = self._cache["log_det_Tinv_proposed"]
+        else:
+            _, log_det_forward_current = self.map.forward(current_state.position)
+            _, log_det_forward_proposed = self.map.forward(proposed_state.position)
+            log_det_tinv_current = -log_det_forward_current
+            log_det_tinv_proposed = -log_det_forward_proposed
+
         return (
-            logq_forward + self._cache["log_det_Tinv_current"],
-            logq_reverse + self._cache["log_det_Tinv_proposed"],
+            logq_forward + log_det_tinv_current,
+            logq_reverse + log_det_tinv_proposed,
         )
 
     def adapt(
@@ -480,6 +504,5 @@ class CoupledProposalBase(ABC):
 
 # Compatibility alias used in several kernels/samplers.
 Proposal = ProposalBase
-ProposalProtocol = ProposalBase
-CoupledProposalProtocol = CoupledProposalBase
-TransportProposalProtocol = TransportProposalBase
+CoupledProposal = CoupledProposalBase
+TransportProposal = TransportProposalBase

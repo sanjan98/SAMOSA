@@ -184,3 +184,9 @@ cython_debug/
 
 # Particular folder
 mlmc_gaussian_example/
+
+# Cursor skill files
+.cursor/
+
+# Docs for now
+docs/

@@ -9,10 +9,11 @@ target distribution via a bijective map.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 from samosa.core.state import ChainState
+from samosa.utils.tools import lognormpdf
 
 
 class TransportMapBase(ABC):
@@ -93,6 +94,9 @@ class TransportMapBase(ABC):
         self.adapt_start = adapt_start
         self.adapt_end = adapt_end
         self.adapt_interval = adapt_interval
+        # Optional affine standardization parameters in target space.
+        self.norm_mean = np.zeros((dim, 1))
+        self.norm_std = np.ones((dim, 1))
 
     @abstractmethod
     def forward(
@@ -165,6 +169,132 @@ class TransportMapBase(ABC):
             filepath: Path to save the checkpoint.
         """
         return None
+
+    def pullback_logpdf(
+        self,
+        position: np.ndarray,
+        *,
+        reference_logpdf: Optional[Callable[[np.ndarray], np.ndarray | float]] = None,
+    ) -> np.ndarray | float:
+        """
+        Evaluate the pullback log-density at target-space position(s).
+
+        Computes:
+            log pi_map(x) = log rho(T(x)) + log |det(∇T(x))|
+
+        Args:
+            position: Target-space position(s), shape (d, N) or (d, 1).
+            reference_logpdf: Optional callable for log rho(r). If omitted,
+                uses `self.reference_model` when available, else standard normal.
+
+        Returns:
+            Scalar (N=1) or array (N,) of pullback log-density values.
+        """
+        reference_position, log_det = self.forward(position)
+        if reference_logpdf is None:
+            log_rho = self._reference_logpdf(reference_position)
+        else:
+            log_rho = reference_logpdf(reference_position)
+        return np.asarray(log_rho) + np.asarray(log_det)
+
+    def _fit_standardization(
+        self,
+        points: np.ndarray,
+        *,
+        inplace: bool = True,
+        eps: float = 1e-12,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Fit affine standardization parameters `(norm_mean, norm_std)` in target space.
+
+        Args:
+            points: Input points with shape (d, N).
+            inplace: If True, write `self.norm_mean` and `self.norm_std`.
+            eps: Lower bound for std entries to avoid divide-by-zero.
+
+        Returns:
+            Tuple `(norm_mean, norm_std)` with shapes (d, 1), (d, 1).
+        """
+        if points.ndim != 2 or points.shape[0] != self.dim:
+            raise ValueError(
+                f"points must have shape (d, N) with d={self.dim}, got {points.shape}."
+            )
+
+        norm_mean = np.mean(points, axis=1, keepdims=True)
+        norm_std = np.std(points, axis=1, keepdims=True)
+        norm_std = np.maximum(norm_std, eps)
+
+        if inplace:
+            self.norm_mean = norm_mean
+            self.norm_std = norm_std
+
+        return norm_mean, norm_std
+
+    def _scale_points(
+        self, points: np.ndarray, *, normalize: bool = True
+    ) -> np.ndarray:
+        """
+        Convert points to scaled target coordinates.
+
+        Args:
+            points: Input points with shape (d, N).
+            normalize: If True, apply standardization using `self.norm_mean` and `self.norm_std`.
+                       If False, denoromalize points by applying the inverse transformation.
+
+        Returns:
+            Normalized or denormalized points.
+        """
+        if points.ndim != 2 or points.shape[0] != self.dim:
+            raise ValueError(
+                f"points must have shape (d, N) with d={self.dim}, got {points.shape}."
+            )
+        if normalize:
+            return (points - self.norm_mean) / self.norm_std
+        else:
+            return points * self.norm_std + self.norm_mean
+
+    def _reference_logpdf(self, reference_position: np.ndarray) -> np.ndarray | float:
+        """
+        Evaluate reference log-density at reference position(s).
+
+        Uses:
+        1. `self.reference_model` when available and compatible.
+        2. Standard normal log-density otherwise.
+        """
+        reference_model = getattr(self, "reference_model", None)
+        if reference_model is None:
+            return lognormpdf(
+                reference_position,
+                np.zeros((self.dim, 1)),
+                np.eye(self.dim),
+            )
+
+        if callable(reference_model):
+            model_result = reference_model(reference_position)
+            if isinstance(model_result, dict):
+                if "log_posterior" in model_result:
+                    posterior = model_result["log_posterior"]
+                    return np.asarray(posterior)
+                raise ValueError(
+                    "reference_model callable returned dict without 'log_posterior'."
+                )
+            return np.asarray(model_result)
+
+        if hasattr(reference_model, "log_prob"):
+            log_prob = reference_model.log_prob(reference_position)
+            # Handle torch-like outputs without importing torch.
+            if hasattr(log_prob, "detach"):
+                log_prob = log_prob.detach()
+            if hasattr(log_prob, "cpu"):
+                log_prob = log_prob.cpu()
+            if hasattr(log_prob, "numpy"):
+                log_prob = log_prob.numpy()
+            return log_prob
+
+        raise TypeError(
+            "Unable to evaluate reference density. Provide `reference_logpdf` callable "
+            "to pullback_logpdf(), or set `reference_model` as callable/log_prob compatible."
+        )
 
     def _extract_iteration(self, samples: list[ChainState]) -> int:
         """

@@ -8,6 +8,7 @@ from samosa.core.proposal import (
     ProposalBase,
     TransportProposalBase,
 )
+from samosa.proposals.maximalproposal import MaximalCoupling
 from samosa.core.state import ChainState
 
 
@@ -112,6 +113,48 @@ class TrackingMap:
 class InheritedCoupledProposal(CoupledProposalBase):
     def sample_pair(self, coarse_state: ChainState, fine_state: ChainState):
         return coarse_state, fine_state
+
+
+def test_maximal_coupling_sample_pair_returns_chainstates_for_base_proposals():
+    proposal_coarse = ConcreteProposal(mu=np.zeros((2, 1)), cov=np.eye(2))
+    proposal_fine = ConcreteProposal(mu=np.zeros((2, 1)), cov=np.eye(2))
+    coupling = MaximalCoupling(proposal_coarse, proposal_fine)
+
+    coarse_state = ChainState(
+        position=np.array([[0.0], [0.0]]), log_posterior=0.0, metadata={"iteration": 1}
+    )
+    fine_state = ChainState(
+        position=np.array([[1.0], [1.0]]), log_posterior=0.0, metadata={"iteration": 1}
+    )
+
+    proposed_coarse, proposed_fine = coupling.sample_pair(coarse_state, fine_state)
+
+    assert isinstance(proposed_coarse, ChainState)
+    assert isinstance(proposed_fine, ChainState)
+    assert proposed_coarse.position.shape == (2, 1)
+    assert proposed_fine.position.shape == (2, 1)
+
+
+def test_maximal_coupling_supports_transport_wrapped_proposals():
+    base_coarse = ConcreteProposal(mu=np.zeros((2, 1)), cov=np.eye(2))
+    base_fine = ConcreteProposal(mu=np.zeros((2, 1)), cov=np.eye(2))
+    map_coarse = TrackingMap()
+    map_fine = TrackingMap()
+    transport_coarse = TransportProposalBase(base_coarse, map_coarse)
+    transport_fine = TransportProposalBase(base_fine, map_fine)
+    coupling = MaximalCoupling(transport_coarse, transport_fine)
+
+    coarse_state = ChainState(
+        position=np.array([[0.0], [0.0]]), log_posterior=0.0, metadata={"iteration": 1}
+    )
+    fine_state = ChainState(
+        position=np.array([[1.0], [1.0]]), log_posterior=0.0, metadata={"iteration": 1}
+    )
+
+    proposed_coarse, proposed_fine = coupling.sample_pair(coarse_state, fine_state)
+
+    assert proposed_coarse.reference_position is not None
+    assert proposed_fine.reference_position is not None
 
 
 def test_proposal_base_update_parameters():

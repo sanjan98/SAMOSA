@@ -10,146 +10,135 @@ import mpart as mt
 
 from samosa.core.map import TransportMap
 from samosa.core.state import ChainState
-from samosa.core.model import ModelProtocol
+from samosa.core.model import Model
 from scipy.optimize import minimize
 from scipy.stats import multivariate_normal
 from samosa.utils.post_processing import get_position_from_states
-from samosa.utils.tools import lognormpdf
 from typing import List, Optional
+
 
 class LowerTriangularMap(TransportMap):
     """
     Class for the lower triangular map using MParT.
     """
 
-    def __init__(self, dim: int, total_order: int = 2, adapt_start: int = 500, adapt_end: int = 1000, adapt_interval: int = 100, reference_model: Optional[ModelProtocol] = None, grad_reference_model: Optional[ModelProtocol] = None):
-        
+    def __init__(
+        self,
+        dim: int,
+        total_order: int = 2,
+        adapt_start: int = 500,
+        adapt_end: int = 1000,
+        adapt_interval: int = 100,
+        reference_model: Optional[Model] = None,
+        grad_reference_model: Optional[Model] = None,
+    ) -> None:
         """
         Initialize the lower triangular map.
         Args:
             dim: Dimension of the map.
-            total_order: Total order of the map.ß
-            adapt_start: Start iteration for adaptation.
-            adapt_end: End iteration for adaptation.
-            adapt_interval: Interval for adaptation.
+            total_order: Total order of the map (default: 2).
+            adapt_start: Iteration to start adaptation (default: 500).
+            adapt_end: Iteration to end adaptation (default: 1000).
+            adapt_interval: Frequency of adaptation (default: 100).
             reference_model: Optional reference model for the map (If none is provided, a standard Gaussian is assumed).
+            grad_reference_model: Optional reference model for the gradient of the log pdf (If none is provided, the default gradient computation will be used).
         """
+        super().__init__(
+            dim=dim,
+            adapt_start=adapt_start,
+            adapt_end=adapt_end,
+            adapt_interval=adapt_interval,
+        )
 
-        self.dim = dim
         self.total_order = total_order
-        self.adapt_start = adapt_start
-        self.adapt_end = adapt_end
-        self.adapt_interval = adapt_interval
         self.reference_model = reference_model
         self.grad_reference_model = grad_reference_model
 
-        # Set some default values for mean and std
-        self.mean = np.zeros((dim, 1))
-        self.std = np.ones((dim, 1))
+        # # Set some default values for mean and std
+        # self.norm_mean = np.zeros((dim, 1))
+        # self.norm_std = np.ones((dim, 1))
 
         # Define the map
         self._define_map()
 
-    def forward(self, x):
+    def forward(self, x: np.ndarray) -> tuple[np.ndarray, float]:
         """
         Forward map to transform the input x using the triangular map.
-        
-        Args: 
+
+        Args:
             x: Input data to be transformed.
         Returns:
             Transformed data and log determinant.
         """
-        # Scale the input first
-        xscaled = (x - self.mean) / self.std
-        # Evaluate the map
+        xscaled = self._scale_points(x, normalize=True)
         r = self.ttm.Evaluate(xscaled)
-        
-        # Also return the log determinant
-        log_det = self.ttm.LogDeterminant(xscaled) + np.log(np.prod(1 / self.std))
-        
-        # Return the transformed data and log determinant
+        log_det = self.ttm.LogDeterminant(xscaled) + np.log(np.prod(1 / self.norm_std))
         return r, log_det
-    
-    def inverse(self, r):
+
+    def inverse(self, r: np.ndarray) -> tuple[np.ndarray, float]:
         """
         Inverse map to transform the input r back to the original space.
+
         Args:
             r: Input data to be transformed back.
         Returns:
             Transformed data and log determinant.
         """
         xscaled = self.ttm.Inverse(r, r)
-        # Rescale the output
-        x = xscaled * self.std + self.mean
-        
-        log_det = -self.ttm.LogDeterminant(xscaled) + np.log(np.prod(self.std))
-        # Return the inverse transformed data and log determinant 
+        x = self._scale_points(xscaled, normalize=False)
+        log_det = -self.ttm.LogDeterminant(xscaled) + np.log(np.prod(self.norm_std))
         return x, log_det
-    
-    def adapt(self, samples: List[ChainState], force_adapt: bool = False):
+
+    def adapt(
+        self,
+        samples: List[ChainState],
+        force_adapt: bool = False,
+        paired_samples: Optional[List[ChainState]] = None,
+    ) -> None:
         """
         Adapt the map to new samples.
-        
+
         Args:
             samples: New samples to adapt the map to.
+            force_adapt: Whether to force adaptation regardless of iteration (default: False).
+            paired_samples: Optional paired samples (not used for this map).
         """
-        
-        # Get current iteration
-        iteration = samples[-1].metadata['iteration'] + 1
 
-        # Only check conditions if not forcing adaptation
-        if not force_adapt:
-            # Check adaptation window
-            if iteration < self.adapt_start or iteration >= self.adapt_end:
-                return None
-            
-            # Check adaptation interval
-            if (iteration - self.adapt_start) % self.adapt_interval != 0:
-                return None
-        
+        del paired_samples  # Unused for this map.
+        iteration = self._extract_iteration(samples)
+        if not self._should_adapt(
+            samples, force_adapt=force_adapt, iteration=iteration
+        ):
+            return None
+
         print(f"Adapting LowerTriangular map at iteration {iteration}")
-
-        # Get positions from states
         positions = get_position_from_states(samples)
 
-        # Check if reference model is provided
-        if self.reference_model is None:         
-            # Standardize the positions of shape (dim, n_samples)
-            self.mean = np.mean(positions, axis=1, keepdims=True)
-            self.std = np.std(positions, axis=1, keepdims=True)
+        if self.reference_model is None:
+            # If no reference model is provided, we can fit the standardization layer to the current samples
+            self.norm_mean, self.norm_std = self._fit_standardization(positions)
         else:
-            self.mean = np.zeros((self.dim, 1))
-            self.std = np.ones((self.dim, 1))
-        
-        # Standardize the positions
-        x = (positions - self.mean) / self.std
-        self.x = x
+            self.norm_mean = np.zeros((self.dim, 1))
+            self.norm_std = np.ones((self.dim, 1))
 
-        # Optimize the map with the new samples
+        x = self._scale_points(positions, normalize=True)
+        self.x = x
         self._optimize_map()
 
     def _define_map(self):
         """
         Define the lower triangular map using MParT.
         """
-        # Prepare lists for components and their map options
         components = []
         for dim in range(1, self.dim + 1):
-            # Create a FixedMultiIndexSet for each dimension
             fixed_mset = mt.FixedMultiIndexSet(dim, self.total_order)
-            
-            # Set up map options (customize if required)
             map_options = mt.MapOptions()
             # map_options.basisType = BasisTypes.HermiteFunctions
-            
-            # Create component from fixed multiindex set
             component = mt.CreateComponent(fixed_mset, map_options)
             components.append(component)
 
-        # Create the triangular map using all components
         triangular_map = mt.TriangularMap(components)
 
-        # Set coefficients for the map
         coefficients = np.concatenate([comp.CoeffMap() for comp in components])
         triangular_map.SetCoeffs(coefficients)
 
@@ -157,134 +146,140 @@ class LowerTriangularMap(TransportMap):
         self.comps = components
 
     def _optimize_map(self):
-        optimizer_options={'gtol': 1e-6, 'disp': True}
+        optimizer_options = {"gtol": 1e-6, "disp": True}
 
         if self.reference_model is None:
-
             # Loop through each component to print initial coefficients, compute objectives, and optimize
-            for idx, (component, x_segment) in enumerate(zip(self.comps, [self.x[:i+1, :] for i in range(self.dim)])):
-                print('==================')
-                print(f'Starting coeffs component {idx + 1}:')
+            for idx, (component, x_segment) in enumerate(
+                zip(self.comps, [self.x[: i + 1, :] for i in range(self.dim)])
+            ):
+                print("==================")
+                print(f"Starting coeffs component {idx + 1}:")
                 print(component.CoeffMap())
-                print(f'Objective value for component {idx + 1}: {self.obj(component.CoeffMap(), component, x_segment):.2E}')
-                print('==================')
+                print(
+                    f"Objective value for component {idx + 1}: {self.obj(component.CoeffMap(), component, x_segment):.2E}"
+                )
+                print("==================")
 
                 # Optimize for each component
-                res = minimize(self.obj, component.CoeffMap(), args=(component, x_segment), jac=self.grad_obj, method='BFGS', options=optimizer_options)
+                _ = minimize(
+                    self.obj,
+                    component.CoeffMap(),
+                    args=(component, x_segment),
+                    jac=self.grad_obj,
+                    method="BFGS",
+                    options=optimizer_options,
+                )
 
                 # Print final coeffs and objective
-                print('==================')
-                print(f'Final coeffs component {idx + 1}:')
+                print("==================")
+                print(f"Final coeffs component {idx + 1}:")
                 print(component.CoeffMap())
-                print(f'Objective value for component {idx + 1}: {self.obj(component.CoeffMap(), component, x_segment):.2E}')
-                print('==================')
-        
-        else:
-            # If a reference model is provided, we can use it to optimize the map
+                print(
+                    f"Objective value for component {idx + 1}: {self.obj(component.CoeffMap(), component, x_segment):.2E}"
+                )
+                print("==================")
 
-            # Print initial coefficients and objective
-            print('==================')
-            print('Starting coeffs (reference model case):')
+        else:
+            # If a reference model is provided, we can use it to optimize the map (components separability lost!)
+            print("==================")
+            print("Starting coeffs (reference model case):")
             print(self.ttm.CoeffMap())
-            print(f'Objective value (reference model case): {self.obj(self.ttm.CoeffMap(), self.ttm, self.x):.2E}')
-            print('==================')
+            print(
+                f"Objective value (reference model case): {self.obj(self.ttm.CoeffMap(), self.ttm, self.x):.2E}"
+            )
+            print("==================")
 
             if self.grad_reference_model is not None:
-                res = minimize(self.obj, self.ttm.CoeffMap(), args=(self.ttm, self.x), jac=self.grad_obj, method='BFGS', options=optimizer_options)
+                _ = minimize(
+                    self.obj,
+                    self.ttm.CoeffMap(),
+                    args=(self.ttm, self.x),
+                    jac=self.grad_obj,
+                    method="BFGS",
+                    options=optimizer_options,
+                )
             else:
                 # If no gradient reference model is provided, use the default gradient computation
-                res = minimize(self.obj, self.ttm.CoeffMap(), args=(self.ttm, self.x), method='BFGS', options=optimizer_options)
+                _ = minimize(
+                    self.obj,
+                    self.ttm.CoeffMap(),
+                    args=(self.ttm, self.x),
+                    method="BFGS",
+                    options=optimizer_options,
+                )
 
             # Print final coefficients and objective
-            print('==================')
-            print('Final coeffs (reference model case):')
+            print("==================")
+            print("Final coeffs (reference model case):")
             print(self.ttm.CoeffMap())
-            print(f'Objective value (reference model case): {self.obj(self.ttm.CoeffMap(), self.ttm, self.x):.2E}')
-            print('==================')
+            print(
+                f"Objective value (reference model case): {self.obj(self.ttm.CoeffMap(), self.ttm, self.x):.2E}"
+            )
+            print("==================")
 
-    def pullback(self, x):
-        """
-        Pull back the input x using the inverse map.
-        
-        Args:
-            x: Input data to be pulled back.
-        Returns:
-            Pulled back data pdf
-        """
-        
-        # Compute the forward map
-        r, logdet = self.forward(x)
-
-        if self.reference_model is None:
-            log_pullback_pdf = lognormpdf(r, np.zeros((self.dim, 1)), np.eye(self.dim)) + logdet
-        else:
-            # Use the reference model to compute the log pdf
-            log_pullback_pdf = self.reference_model(r)['log_posterior'] + logdet
-        pull_back_pdf = np.exp(log_pullback_pdf)
-        return pull_back_pdf
-    
     def checkpoint_model(self, filepath: str):
         """
         Save only the lower triangular map for later plotting/analysis
-        
+
         Args:
             filepath: Path to save the model (use .pkl extension)
         """
         import pickle
-        
-        filepath = filepath + '.pkl'
-        
+
+        filepath = filepath + ".pkl"
+
         model_data = {
-            'map_coefficients': self.ttm.CoeffMap(),
-            'component_coeffs': [comp.CoeffMap() for comp in self.comps],
-            'mean': self.mean,
-            'std': self.std,
-            'dim': self.dim,
-            'total_order': self.total_order
+            "map_coefficients": self.ttm.CoeffMap(),
+            "component_coeffs": [comp.CoeffMap() for comp in self.comps],
+            "mean": self.norm_mean,
+            "std": self.norm_std,
+            "dim": self.dim,
+            "total_order": self.total_order,
         }
-        
-        with open(filepath, 'wb') as f:
+
+        with open(filepath, "wb") as f:
             pickle.dump(model_data, f)
-        
+
         print(f"Model saved to {filepath}")
 
     def load_model(self, filepath: str):
         """
         Load the lower triangular map from a checkpoint file.
-        
+
         Args:
             filepath: Path to the checkpoint file (use .pkl extension)
         """
         import pickle
 
-        filepath = filepath + '.pkl'
-        
-        with open(filepath, 'rb') as f:
+        filepath = filepath + ".pkl"
+
+        with open(filepath, "rb") as f:
             model_data = pickle.load(f)
-        
+
         # Load basic parameters
-        self.mean = model_data['mean']
-        self.std = model_data['std']
-        self.dim = model_data['dim']
-        self.total_order = model_data['total_order']
-        
+        self.norm_mean = model_data["mean"]
+        self.norm_std = model_data["std"]
+        self.dim = model_data["dim"]
+        self.total_order = model_data["total_order"]
+
         # Recreate the map structure if needed
         self._define_map()
-        
+
         # Load coefficients
-        self.ttm.SetCoeffs(model_data['map_coefficients'])
-        
+        self.ttm.SetCoeffs(model_data["map_coefficients"])
+
         # Load individual component coefficients
-        for comp, coeffs in zip(self.comps, model_data['component_coeffs']):
+        for comp, coeffs in zip(self.comps, model_data["component_coeffs"]):
             comp.SetCoeffs(coeffs)
-        
+
         print(f"Model loaded from {filepath}")
 
     # Negative log likelihood objective
     def obj(self, coeffs, tri_map, x):
-        """ 
-        Evaluates the log-likelihood of the samples using the map-induced density. 
-        
+        """
+        Evaluates the log-likelihood of the samples using the map-induced density.
+
         *** An important note: The samples x are already standardized in the _optimize_map method, so we can stick to using the native Evaluate and LogDeterminant methods of the map. As the standardization layer is an affine map, it does not have an effect on the "optimization" of the map coefficients. ***
         """
         num_points = x.shape[1]
@@ -300,13 +295,13 @@ class LowerTriangularMap(TransportMap):
             rho_of_map_of_x = rho1.logpdf(map_of_x.T)
         else:
             # Use the reference model to compute the density
-            rho_of_map_of_x = self.reference_model(map_of_x)['log_posterior']
+            rho_of_map_of_x = self.reference_model(map_of_x)["log_posterior"]
 
         # Return the negative log-likelihood of the entire dataset
-        return -np.sum(rho_of_map_of_x + log_det)/num_points
+        return -np.sum(rho_of_map_of_x + log_det) / num_points
 
     def grad_obj(self, coeffs, tri_map, x):
-        """ Returns the gradient of the log-likelihood objective wrt the map parameters. """
+        """Returns the gradient of the log-likelihood objective wrt the map parameters."""
         num_points = x.shape[1]
         tri_map.SetCoeffs(coeffs)
 
@@ -323,8 +318,8 @@ class LowerTriangularMap(TransportMap):
                 grad_rho_of_map_of_x = tri_map.CoeffGrad(x, grad_log_posterior)
             else:
                 grad_rho_of_map_of_x = tri_map.CoeffGrad(x, -map_of_x)
-        
+
         # Get the gradient of the log determinant with respect to the map coefficients
         grad_log_det = tri_map.LogDeterminantCoeffGrad(x)
 
-        return -np.sum(grad_rho_of_map_of_x + grad_log_det, 1)/num_points
+        return -np.sum(grad_rho_of_map_of_x + grad_log_det, 1) / num_points
