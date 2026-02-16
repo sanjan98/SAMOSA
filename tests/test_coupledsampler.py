@@ -12,7 +12,6 @@ import pytest
 from samosa.core.state import ChainState
 from samosa.core.model import ModelProtocol
 from samosa.core.proposal import ProposalBase
-from samosa.core.kernel import CoupledKernelProtocol
 from samosa.samplers.coupled_chain import coupledMCMCsampler
 from samosa.utils.post_processing import load_coupled_samples
 
@@ -66,8 +65,8 @@ class MockProposal(ProposalBase):
         self.adapt_called = True
 
 
-class MockKernel(CoupledKernelProtocol):
-    """Mock kernel for testing the coupled sampler."""
+class MockKernel:
+    """Mock kernel for testing the coupled sampler (new API: propose/acceptance_ratio/adapt)."""
 
     def __init__(self, coarse_model, fine_model):
         self.coarse_model = coarse_model
@@ -76,10 +75,8 @@ class MockKernel(CoupledKernelProtocol):
         self.acceptance_ratio_called = False
         self.adapt_called = False
 
-    def propose(
-        self, proposal_coarse, proposal_fine, current_coarse_state, current_fine_state
-    ):
-        """Return mock proposed states. Returns (proposed_coarse, proposed_fine, current_coarse, current_fine)."""
+    def propose(self, current_coarse_state, current_fine_state):
+        """Return mock proposed states. Returns (proposed_coarse, proposed_fine)."""
         self.propose_called = True
         proposed_coarse_position = current_coarse_state.position + 0.1
         proposed_fine_position = current_fine_state.position + 0.1
@@ -94,19 +91,12 @@ class MockKernel(CoupledKernelProtocol):
             **self.fine_model(proposed_fine_position),
             metadata=current_fine_state.metadata.copy(),
         )
-        return (
-            proposed_coarse_state,
-            proposed_fine_state,
-            current_coarse_state,
-            current_fine_state,
-        )
+        return proposed_coarse_state, proposed_fine_state
 
     def acceptance_ratio(
         self,
-        proposal_coarse,
         current_coarse,
         proposed_coarse,
-        proposal_fine,
         current_fine,
         proposed_fine,
     ):
@@ -114,13 +104,9 @@ class MockKernel(CoupledKernelProtocol):
         self.acceptance_ratio_called = True
         return 0.7, 0.8
 
-    def adapt(self, proposal_coarse, proposed_coarse, proposal_fine, proposed_fine):
+    def adapt(self, proposed_coarse, proposed_fine):
         """Record that adapt was called."""
         self.adapt_called = True
-        if hasattr(proposal_coarse, "adapt"):
-            proposal_coarse.adapt(proposed_coarse)
-        if hasattr(proposal_fine, "adapt"):
-            proposal_fine.adapt(proposed_fine)
 
 
 # --------------------------------------------------
@@ -237,11 +223,11 @@ def test_coupled_sampler_init(
 
 
 def test_coupled_sampler_dimension_mismatch(kernel, proposal_coarse, proposal_fine):
-    """Test that an assertion error is raised when dimensions don't match."""
+    """Test that a ValueError is raised when dimensions don't match."""
     initial_position_coarse = np.array([[0.5], [0.5]])
     initial_position_fine = np.array([[0.2], [0.3], [0.4]])  # Different dimension
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         coupledMCMCsampler(
             kernel=kernel,
             proposal_coarse=proposal_coarse,
@@ -345,3 +331,84 @@ def test_coupled_sampler_deep_copy(coupled_sampler, output_dir, monkeypatch):
     for i in range(1, len(samples_coarse)):
         samples_coarse[i - 1].metadata["test_key"] = "test_value"
         assert "test_key" not in samples_coarse[i].metadata
+
+
+def test_coupled_sampler_checkpoint_layout(
+    kernel,
+    proposal_coarse,
+    proposal_fine,
+    initial_position_coarse,
+    initial_position_fine,
+    output_dir,
+    monkeypatch,
+):
+    """Test that checkpoints use output_dir/samples/ and final .pkl at root."""
+    monkeypatch.setattr("numpy.random.rand", lambda: 0.5)
+    sampler = coupledMCMCsampler(
+        kernel=kernel,
+        proposal_coarse=proposal_coarse,
+        proposal_fine=proposal_fine,
+        initial_position_coarse=initial_position_coarse,
+        initial_position_fine=initial_position_fine,
+        n_iterations=6,
+        save_iteration=2,
+    )
+    sampler.run(output_dir)
+
+    assert os.path.exists(f"{output_dir}/samples_coarse.pkl")
+    assert os.path.exists(f"{output_dir}/samples_fine.pkl")
+    assert os.path.isdir(f"{output_dir}/samples")
+    assert os.path.exists(f"{output_dir}/samples/samples_coarse_2.pkl")
+    assert os.path.exists(f"{output_dir}/samples/samples_fine_2.pkl")
+    assert os.path.exists(f"{output_dir}/samples/samples_coarse_4.pkl")
+    assert os.path.exists(f"{output_dir}/samples/samples_fine_4.pkl")
+
+
+def test_coupled_sampler_run_returns_acceptance_rates(
+    coupled_sampler, output_dir, monkeypatch
+):
+    """Test that run() returns (acceptance_rate_coarse, acceptance_rate_fine)."""
+    monkeypatch.setattr("numpy.random.rand", lambda: 0.5)
+    result = coupled_sampler.run(output_dir)
+    assert result is not None
+    ar_c, ar_f = result
+    assert 0 <= ar_c <= 1.0
+    assert 0 <= ar_f <= 1.0
+
+
+def test_coupled_sampler_adapt_called_each_iteration(
+    coupled_sampler, output_dir, monkeypatch
+):
+    """Test that kernel.adapt is called each iteration."""
+    monkeypatch.setattr("numpy.random.rand", lambda: 0.5)
+    coupled_sampler.run(output_dir)
+    assert coupled_sampler.kernel.adapt_called is True
+
+
+def test_coupled_sampler_proposed_states_have_log_posterior(
+    coarse_model,
+    fine_model,
+    proposal_coarse,
+    proposal_fine,
+    initial_position_coarse,
+    initial_position_fine,
+    output_dir,
+    monkeypatch,
+):
+    """Test that after kernel.propose, states have log_posterior (model was evaluated)."""
+    monkeypatch.setattr("numpy.random.rand", lambda: 0.5)
+    kernel = MockKernel(coarse_model, fine_model)
+    sampler = coupledMCMCsampler(
+        kernel=kernel,
+        proposal_coarse=proposal_coarse,
+        proposal_fine=proposal_fine,
+        initial_position_coarse=initial_position_coarse,
+        initial_position_fine=initial_position_fine,
+        n_iterations=2,
+    )
+    sampler.run(output_dir)
+    samples_coarse, samples_fine = load_coupled_samples(output_dir)
+    for s in samples_coarse:
+        assert s.log_posterior is not None
+    for s in samples_fine:
+        assert s.log_posterior is not None

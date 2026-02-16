@@ -468,8 +468,8 @@ class CoupledProposalBase(ABC):
         Delegates adaptation to the two wrapped proposals.
 
         Args:
-            coarse_state: Current coarse state.
-            fine_state: Current fine state.
+            coarse_state: Coarse state.
+            fine_state: Fine state.
             samples: Optional tuple of (coarse_samples, fine_samples).
                 Passed through to proposals when provided.
             force_adapt: Passed through to proposals.

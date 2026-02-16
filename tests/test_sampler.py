@@ -6,6 +6,7 @@ import pickle
 from unittest.mock import patch
 
 from samosa.core.state import ChainState
+from samosa.core.proposal import ProposalBase
 from samosa.samplers.single_chain import MCMCsampler
 
 
@@ -20,44 +21,49 @@ class MockModel:
 
 
 class MockKernel:
-    """Mock kernel that alternates between accepting and rejecting."""
+    """Mock kernel that alternates between accepting and rejecting (new API)."""
 
     def __init__(self, model):
         self.model = model
         self.call_count = 0
         self.ar = 0.0
 
-    def propose(self, proposal, current_state):
+    def propose(self, state):
         self.call_count += 1
-        position = current_state.position + 0.1 * np.ones_like(current_state.position)
-        proposed_state = ChainState(position=position, **self.model(position))
-        return proposed_state, current_state
+        position = state.position + 0.1 * np.ones_like(state.position)
+        proposed_state = ChainState(
+            position=position,
+            **self.model(position),
+            metadata=state.metadata.copy() if state.metadata else {},
+        )
+        return proposed_state
 
-    def acceptance_ratio(self, proposal, current, proposed):
-        # Alternate between 0.8 and 0.2 acceptance ratio
+    def acceptance_ratio(self, current, proposed):
         self.ar = 0.8 if self.call_count % 2 == 0 else 0.2
         return self.ar
 
-    def adapt(self, proposal, state):
+    def adapt(self, state, *, samples=None, force_adapt=False):
         pass
 
 
-class MockProposal:
-    """Mock proposal that adds a constant step."""
+class MockProposal(ProposalBase):
+    """Mock proposal that adds a constant step (inherits ProposalBase for kernel checks)."""
 
     def __init__(self, dim):
+        cov = np.eye(dim)
+        super().__init__(mu=np.zeros((dim, 1)), cov=cov)
         self.dim = dim
-        self.sigma = np.eye(dim)
+        self.sigma = cov
         self.adapted = False
 
-    def sample(self, current_state):
-        position = current_state.position + 0.1 * np.ones((self.dim, 1))
+    def sample(self, state, eta=None):
+        position = state.position + 0.1 * np.ones((self.dim, 1))
         return ChainState(position=position)
 
     def proposal_logpdf(self, current, proposed):
         return 0.0, 0.0
 
-    def adapt(self, state):
+    def adapt(self, state, *, samples=None, force_adapt=False, paired_samples=None):
         self.adapted = True
 
 
@@ -139,11 +145,9 @@ def test_mcmc_sampler_run(model, kernel, proposal, initial_position, temp_dir):
 
 def test_mcmc_sampler_metropolis(model, proposal, initial_position, temp_dir):
     """Test with Metropolis-Hastings kernel."""
-    # Use the real kernel for this test
     from samosa.kernels.metropolis import MetropolisHastingsKernel
 
-    kernel = MetropolisHastingsKernel(model)
-
+    kernel = MetropolisHastingsKernel(model, proposal)
     n_iterations = 10
     sampler = MCMCsampler(kernel, proposal, initial_position, n_iterations)
 
@@ -156,11 +160,9 @@ def test_mcmc_sampler_metropolis(model, proposal, initial_position, temp_dir):
 
 def test_mcmc_sampler_delayed_rejection(model, proposal, initial_position, temp_dir):
     """Test with Delayed Rejection kernel."""
-    # Use the real kernel for this test
     from samosa.kernels.delayedrejection import DelayedRejectionKernel
 
-    kernel = DelayedRejectionKernel(model)
-
+    kernel = DelayedRejectionKernel(model, proposal)
     n_iterations = 10
     sampler = MCMCsampler(kernel, proposal, initial_position, n_iterations)
 
@@ -193,4 +195,64 @@ def test_acceptance_rate(model, kernel, proposal, initial_position, temp_dir):
     assert all(0 <= s.metadata["acceptance_probability"] <= 1 for s in samples)
 
 
-# Maybe add more complex tests later?
+def test_single_chain_checkpoint_layout(model, proposal, initial_position, temp_dir):
+    """Test that checkpoints use output_dir/samples/ and final samples.pkl at root."""
+    from samosa.kernels.metropolis import MetropolisHastingsKernel
+
+    kernel = MetropolisHastingsKernel(model, proposal)
+    sampler = MCMCsampler(
+        kernel, proposal, initial_position, n_iterations=5, save_iteration=2
+    )
+    sampler.run(temp_dir)
+
+    assert os.path.exists(os.path.join(temp_dir, "samples.pkl"))
+    assert os.path.isdir(os.path.join(temp_dir, "samples"))
+    assert os.path.exists(os.path.join(temp_dir, "samples", "samples_2.pkl"))
+    assert os.path.exists(os.path.join(temp_dir, "samples", "samples_4.pkl"))
+
+
+def test_single_chain_model_evaluated_on_propose(proposal, initial_position, temp_dir):
+    """Test that the model is evaluated when the kernel proposes (MH kernel)."""
+    from samosa.kernels.metropolis import MetropolisHastingsKernel
+
+    class CountingModel:
+        """Wrapper that counts __call__ invocations."""
+
+        call_count = 0
+
+        def __call__(self, params):
+            CountingModel.call_count += 1
+            return {"log_posterior": -0.5 * float(np.sum(params**2))}
+
+    counting_model = CountingModel()
+    CountingModel.call_count = 0
+    kernel = MetropolisHastingsKernel(counting_model, proposal)
+    sampler = MCMCsampler(kernel, proposal, initial_position, n_iterations=3)
+    sampler.run(temp_dir)
+
+    # Initial state: 1 eval. Each of 3 iterations: propose does 1 model eval. Total >= 4.
+    assert CountingModel.call_count >= 4
+
+
+def test_single_chain_adapt_called_each_iteration(
+    model, proposal, initial_position, temp_dir
+):
+    """Test that proposal.adapt is called each iteration (via MH kernel)."""
+    from samosa.kernels.metropolis import MetropolisHastingsKernel
+
+    kernel = MetropolisHastingsKernel(model, proposal)
+    sampler = MCMCsampler(kernel, proposal, initial_position, n_iterations=5)
+    with patch("numpy.random.rand", return_value=0.5):
+        sampler.run(temp_dir)
+    assert proposal.adapted is True
+
+
+def test_single_chain_run_returns_acceptance_rate(
+    model, kernel, proposal, initial_position, temp_dir
+):
+    """Test that run() returns the acceptance rate."""
+    sampler = MCMCsampler(kernel, proposal, initial_position, n_iterations=10)
+    with patch("numpy.random.rand", return_value=0.5):
+        rate = sampler.run(temp_dir)
+    assert rate is not None
+    assert 0 <= rate <= 1.0

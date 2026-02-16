@@ -163,10 +163,13 @@ class TransportMapBase(ABC):
         """
         Optional checkpoint hook for map persistence.
 
-        Subclasses can override this to persist map state.
+        Subclasses can override this to persist map state (e.g. to a .pkl or
+        .pth file). Samplers call this with filepath built from output_dir and
+        the current MCMC iteration, so no separate checkpoint counter is needed;
+        the iteration number identifies the checkpoint.
 
         Args:
-            filepath: Path to save the checkpoint.
+            filepath: Path to save the checkpoint (e.g. ``{output_dir}/map_{iteration}``).
         """
         return None
 

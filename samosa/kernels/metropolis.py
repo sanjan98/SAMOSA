@@ -65,7 +65,7 @@ class MetropolisHastingsKernel:
 
     def adapt(
         self,
-        proposed: ChainState,
+        current: ChainState,
         *,
         samples: Optional[list[ChainState]] = None,
         force_adapt: Optional[bool] = False,
@@ -73,8 +73,8 @@ class MetropolisHastingsKernel:
         """Adapt the proposal based on the proposed state.
 
         Args:
-            proposed: Proposed state of the chain.
+            current: Current state of the chain.
             samples: Optional list of samples from the chain.
             force_adapt: Optional force-adaptation flag.
         """
-        self.proposal.adapt(proposed, samples=samples, force_adapt=force_adapt)
+        self.proposal.adapt(current, samples=samples, force_adapt=force_adapt)

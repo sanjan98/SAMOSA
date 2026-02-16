@@ -81,7 +81,23 @@ class CoupledKernelBase(ABC):
         proposed_coarse, proposed_fine = self.coupled_proposal.sample_pair(
             current_coarse, current_fine
         )
-        return proposed_coarse, proposed_fine
+        model_result_coarse = self.coarse_model(proposed_coarse.position)
+        model_result_fine = self.fine_model(proposed_fine.position)
+        meta_c = current_coarse.metadata.copy() if current_coarse.metadata else {}
+        meta_f = current_fine.metadata.copy() if current_fine.metadata else {}
+        proposed_coarse_state = ChainState(
+            position=proposed_coarse.position,
+            reference_position=proposed_coarse.reference_position,
+            **model_result_coarse,
+            metadata=meta_c,
+        )
+        proposed_fine_state = ChainState(
+            position=proposed_fine.position,
+            reference_position=proposed_fine.reference_position,
+            **model_result_fine,
+            metadata=meta_f,
+        )
+        return proposed_coarse_state, proposed_fine_state
 
     def acceptance_ratio(
         self,
@@ -133,8 +149,8 @@ class CoupledKernelBase(ABC):
 
     def adapt(
         self,
-        proposed_coarse: ChainState,
-        proposed_fine: ChainState,
+        current_coarse: ChainState,
+        current_fine: ChainState,
         *,
         samples: Optional[tuple[list[ChainState], list[ChainState]]] = None,
         force_adapt: bool = False,
@@ -143,11 +159,11 @@ class CoupledKernelBase(ABC):
         Adapt both proposals using the proposed states and the samples.
 
         Args:
-            proposed_coarse: Proposed coarse state.
-            proposed_fine: Proposed fine state.
+            current_coarse: Current coarse state.
+            current_fine: Current fine state.
             samples: Optional tuple of (coarse_samples, fine_samples).
             force_adapt: Whether to force adaptation.
         """
         self.coupled_proposal.adapt_pair(
-            proposed_coarse, proposed_fine, samples=samples, force_adapt=force_adapt
+            current_coarse, current_fine, samples=samples, force_adapt=force_adapt
         )
