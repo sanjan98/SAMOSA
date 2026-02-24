@@ -153,13 +153,13 @@ class LowerTriangularMap(TransportMap):
             for idx, (component, x_segment) in enumerate(
                 zip(self.comps, [self.x[: i + 1, :] for i in range(self.dim)])
             ):
-                print("==================")
-                print(f"Starting coeffs component {idx + 1}:")
-                print(component.CoeffMap())
-                print(
-                    f"Objective value for component {idx + 1}: {self.obj(component.CoeffMap(), component, x_segment):.2E}"
-                )
-                print("==================")
+                # print("==================")
+                # print(f"Starting coeffs component {idx + 1}:")
+                # print(component.CoeffMap())
+                # print(
+                #     f"Objective value for component {idx + 1}: {self.obj(component.CoeffMap(), component, x_segment):.2E}"
+                # )
+                # print("==================")
 
                 # Optimize for each component
                 _ = minimize(
@@ -172,23 +172,23 @@ class LowerTriangularMap(TransportMap):
                 )
 
                 # Print final coeffs and objective
-                print("==================")
-                print(f"Final coeffs component {idx + 1}:")
-                print(component.CoeffMap())
-                print(
-                    f"Objective value for component {idx + 1}: {self.obj(component.CoeffMap(), component, x_segment):.2E}"
-                )
-                print("==================")
+                # print("==================")
+                # print(f"Final coeffs component {idx + 1}:")
+                # print(component.CoeffMap())
+                # print(
+                #     f"Objective value for component {idx + 1}: {self.obj(component.CoeffMap(), component, x_segment):.2E}"
+                # )
+                # print("==================")
 
         else:
             # If a reference model is provided, we can use it to optimize the map (components separability lost!)
-            print("==================")
-            print("Starting coeffs (reference model case):")
-            print(self.ttm.CoeffMap())
-            print(
-                f"Objective value (reference model case): {self.obj(self.ttm.CoeffMap(), self.ttm, self.x):.2E}"
-            )
-            print("==================")
+            # print("==================")
+            # print("Starting coeffs (reference model case):")
+            # print(self.ttm.CoeffMap())
+            # print(
+            #     f"Objective value (reference model case): {self.obj(self.ttm.CoeffMap(), self.ttm, self.x):.2E}"
+            # )
+            # print("==================")
 
             if self.grad_reference_model is not None:
                 _ = minimize(
@@ -210,13 +210,13 @@ class LowerTriangularMap(TransportMap):
                 )
 
             # Print final coefficients and objective
-            print("==================")
-            print("Final coeffs (reference model case):")
-            print(self.ttm.CoeffMap())
-            print(
-                f"Objective value (reference model case): {self.obj(self.ttm.CoeffMap(), self.ttm, self.x):.2E}"
-            )
-            print("==================")
+            # print("==================")
+            # print("Final coeffs (reference model case):")
+            # print(self.ttm.CoeffMap())
+            # print(
+            #     f"Objective value (reference model case): {self.obj(self.ttm.CoeffMap(), self.ttm, self.x):.2E}"
+            # )
+            # print("==================")
 
     def checkpoint_model(self, filepath: str):
         """
@@ -241,7 +241,7 @@ class LowerTriangularMap(TransportMap):
         with open(filepath, "wb") as f:
             pickle.dump(model_data, f)
 
-        print(f"Model saved to {filepath}")
+        # print(f"Model saved to {filepath}")
 
     def load_model(self, filepath: str):
         """
@@ -273,7 +273,7 @@ class LowerTriangularMap(TransportMap):
         for comp, coeffs in zip(self.comps, model_data["component_coeffs"]):
             comp.SetCoeffs(coeffs)
 
-        print(f"Model loaded from {filepath}")
+        # print(f"Model loaded from {filepath}")
 
     # Negative log likelihood objective
     def obj(self, coeffs, tri_map, x):

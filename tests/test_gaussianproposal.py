@@ -5,7 +5,7 @@ from samosa.core.state import ChainState
 from samosa.proposals.gaussianproposal import (
     GaussianRandomWalk,
     IndependentProposal,
-    PreCrankedNicholson,
+    PreCrankNicolson,
 )
 
 
@@ -76,19 +76,19 @@ def test_precn_init_validation():
     mu = np.zeros((2, 1))
     cov = np.eye(2)
     with pytest.raises(ValueError):
-        PreCrankedNicholson(mu=mu, cov=np.array([1.0, 2.0]), beta=0.2)
+        PreCrankNicolson(mu=mu, cov=np.array([1.0, 2.0]), beta=0.2)
     with pytest.raises(ValueError):
-        PreCrankedNicholson(mu=np.zeros((3, 1)), cov=cov, beta=0.2)
+        PreCrankNicolson(mu=np.zeros((3, 1)), cov=cov, beta=0.2)
     with pytest.raises(ValueError):
-        PreCrankedNicholson(mu=mu, cov=cov, beta=0.0)
+        PreCrankNicolson(mu=mu, cov=cov, beta=0.0)
     with pytest.raises(ValueError):
-        PreCrankedNicholson(mu=mu, cov=cov, beta=0.2, target_acceptance=1.2)
+        PreCrankNicolson(mu=mu, cov=cov, beta=0.2, target_acceptance=1.2)
     with pytest.raises(ValueError):
-        PreCrankedNicholson(mu=mu, cov=cov, beta=0.2, beta_min=0.5, beta_max=0.4)
+        PreCrankNicolson(mu=mu, cov=cov, beta=0.2, beta_min=0.5, beta_max=0.4)
 
 
 def test_precn_sample_logpdf_and_update(current_state):
-    proposal = PreCrankedNicholson(mu=np.zeros((2, 1)), cov=np.eye(2), beta=0.3)
+    proposal = PreCrankNicolson(mu=np.zeros((2, 1)), cov=np.eye(2), beta=0.3)
     proposed = proposal.sample(current_state)
     assert proposed.position.shape == current_state.position.shape
 
@@ -107,7 +107,7 @@ def test_precn_sample_logpdf_and_update(current_state):
 
 
 def test_precn_adapt_clamps_beta():
-    proposal = PreCrankedNicholson(
+    proposal = PreCrankNicolson(
         mu=np.zeros((2, 1)),
         cov=np.eye(2),
         beta=0.2,
@@ -115,8 +115,12 @@ def test_precn_adapt_clamps_beta():
         beta_min=0.1,
         beta_max=0.3,
     )
-    accepted_state = ChainState(position=np.zeros((2, 1)), log_posterior=0.0, metadata={"is_accepted": True})
-    rejected_state = ChainState(position=np.zeros((2, 1)), log_posterior=0.0, metadata={"is_accepted": False})
+    accepted_state = ChainState(
+        position=np.zeros((2, 1)), log_posterior=0.0, metadata={"is_accepted": True}
+    )
+    rejected_state = ChainState(
+        position=np.zeros((2, 1)), log_posterior=0.0, metadata={"is_accepted": False}
+    )
 
     proposal.adapt(accepted_state)
     assert 0.1 <= proposal.beta <= 0.3

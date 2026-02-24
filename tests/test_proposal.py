@@ -8,7 +8,7 @@ from samosa.core.proposal import (
     ProposalBase,
     TransportProposalBase,
 )
-from samosa.proposals.maximalproposal import MaximalCoupling
+from samosa.proposals.coupled_proposals import MaximalCoupling
 from samosa.core.state import ChainState
 
 
@@ -191,7 +191,7 @@ def test_adaptive_proposal_delegates_sample_logpdf_and_attrs():
     state = ChainState(
         position=np.array([[1.0], [2.0]]), log_posterior=-1.0, metadata={"iteration": 1}
     )
-    proposed = wrapped.sample(state, common_step=np.ones((2, 1)))
+    proposed = wrapped.sample(state, eta=np.ones((2, 1)))
     logq_fwd, logq_rev = wrapped.proposal_logpdf(state, proposed)
 
     assert np.allclose(proposed.position, np.array([[2.0], [3.0]]))
@@ -337,3 +337,108 @@ def test_dummy_coupled_proposal_satisfies_coupled_protocol():
     assert isinstance(coupled, CoupledProposalBase)
     assert coupled.proposal_coarse is base1
     assert coupled.proposal_fine is base2
+
+
+# ----- TransportProposalBase with dummy identity map -----
+
+
+class IdentityMapForTransport:
+    """Identity map: forward(x)=x, inverse(r)=r, zero log-det."""
+
+    def forward(self, position):
+        return position, 0.0
+
+    def inverse(self, reference_position):
+        return reference_position, 0.0
+
+    def adapt(self, *args, **kwargs):
+        pass
+
+
+class BaseProposalWithStep(ProposalBase):
+    """Base proposal that adds a fixed step in reference space (for transport tests)."""
+
+    def __init__(self, step):
+        self._step = np.asarray(step).reshape(-1, 1)
+        super().__init__(mu=np.zeros_like(self._step), cov=np.eye(self._step.shape[0]))
+
+    def sample(self, state, eta=None):
+        return ChainState(position=state.position + self._step)
+
+    def proposal_logpdf(self, current, proposed):
+        return 0.0, 0.0  # symmetric, so logq equal
+
+
+def test_transport_proposal_sample_returns_reference_position():
+    """TransportProposalBase.sample() returns state with reference_position set; position = inverse(proposed_ref)."""
+    step = np.array([[0.1], [-0.05]])
+    base = BaseProposalWithStep(step)
+    tmap = IdentityMapForTransport()
+    transport = TransportProposalBase(base, tmap)
+    state = ChainState(
+        position=np.array([[1.0], [2.0]]),
+        log_posterior=-1.0,
+        metadata={"iteration": 1},
+    )
+    proposed = transport.sample(state)
+    assert proposed.reference_position is not None
+    assert proposed.reference_position.shape == state.position.shape
+    ref_expected = state.position + step
+    np.testing.assert_allclose(proposed.reference_position, ref_expected)
+    np.testing.assert_allclose(proposed.position, ref_expected)
+
+
+def test_transport_proposal_logpdf_both_have_reference_position():
+    """TransportProposalBase.proposal_logpdf with both states having reference_position returns finite (logq_fwd, logq_rev)."""
+    base = BaseProposalWithStep(np.array([[0.1], [0.1]]))
+    transport = TransportProposalBase(base, IdentityMapForTransport())
+    current = ChainState(
+        position=np.array([[0.0], [0.0]]),
+        reference_position=np.array([[0.0], [0.0]]),
+        log_posterior=0.0,
+        metadata={},
+    )
+    proposed = ChainState(
+        position=np.array([[0.1], [0.1]]),
+        reference_position=np.array([[0.1], [0.1]]),
+        log_posterior=-0.01,
+        metadata={},
+    )
+    logq_fwd, logq_rev = transport.proposal_logpdf(current, proposed)
+    assert np.isfinite(logq_fwd)
+    assert np.isfinite(logq_rev)
+    assert logq_fwd == logq_rev  # symmetric base + identity map
+
+
+def test_transport_proposal_logpdf_raises_when_reference_position_none():
+    """TransportProposalBase.proposal_logpdf raises when state or proposed has reference_position None."""
+    base = BaseProposalWithStep(np.array([[0.1], [0.1]]))
+    transport = TransportProposalBase(base, IdentityMapForTransport())
+    current = ChainState(
+        position=np.array([[0.0], [0.0]]),
+        reference_position=np.array([[0.0], [0.0]]),
+        log_posterior=0.0,
+        metadata={},
+    )
+    proposed_no_ref = ChainState(
+        position=np.array([[0.1], [0.1]]),
+        reference_position=None,
+        log_posterior=-0.01,
+        metadata={},
+    )
+    with pytest.raises(ValueError, match="reference_position must be set"):
+        transport.proposal_logpdf(current, proposed_no_ref)
+    current_no_ref = ChainState(
+        position=np.array([[0.0], [0.0]]),
+        reference_position=None,
+        log_posterior=0.0,
+        metadata={},
+    )
+    proposed = ChainState(
+        position=np.array([[0.1], [0.1]]),
+        reference_position=np.array([[0.1], [0.1]]),
+        log_posterior=-0.01,
+        metadata={},
+    )
+    with pytest.raises(ValueError, match="reference_position must be set"):
+        transport.proposal_logpdf(current_no_ref, proposed)

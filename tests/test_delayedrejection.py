@@ -250,3 +250,34 @@ def test_e2e_dr_chain(kernel, current_state):
             states.append(states[-1])
         kernel.adapt(states[-1])
     assert len(states) == 6
+
+
+def test_e2e_dr_unseen_gaussian_posterior(gaussian_posterior_2d):
+    """E2e DR with unseen Gaussian posterior: short chain, valid ChainState and log_posterior."""
+    proposal = GaussianRandomWalk(mu=np.zeros((2, 1)), cov=0.12 * np.eye(2))
+    kernel = DelayedRejectionKernel(gaussian_posterior_2d, proposal, cov_scale=0.5)
+    current = ChainState(
+        position=np.array([[0.2], [0.1]]),
+        log_posterior=float(
+            gaussian_posterior_2d(np.array([[0.2], [0.1]]))["log_posterior"]
+        ),
+        metadata={"iteration": 1, "mean": np.zeros((2, 1)), "covariance": np.eye(2)},
+    )
+    np.random.seed(77)
+    states = [current]
+    for _ in range(12):
+        proposed = kernel.propose(states[-1])
+        assert isinstance(proposed, ChainState)
+        assert proposed.position.shape == (2, 1)
+        assert proposed.log_posterior is not None and np.isfinite(
+            proposed.log_posterior
+        )
+        expected_logp = float(gaussian_posterior_2d(proposed.position)["log_posterior"])
+        assert np.isclose(proposed.log_posterior, expected_logp)
+        u = np.random.rand()
+        if kernel.ar == 1.0 or u < kernel.ar:
+            states.append(proposed)
+        else:
+            states.append(states[-1])
+        kernel.adapt(states[-1])
+    assert len(states) == 13

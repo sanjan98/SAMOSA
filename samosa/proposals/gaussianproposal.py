@@ -159,7 +159,7 @@ class IndependentProposal(ProposalBase):
         return float(logq_forward), float(logq_reverse)
 
 
-class PreCrankedNicholson(ProposalBase):
+class PreCrankNicolson(ProposalBase):
     """
     Preconditioned Crank-Nicolson (pCN) proposal.
 

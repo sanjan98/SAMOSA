@@ -11,13 +11,17 @@ from __future__ import annotations
 import logging
 import os
 import pickle
+import warnings
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
-from matplotlib.ticker import FuncFormatter
+from matplotlib.lines import Line2D
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 from scipy.stats import gaussian_kde
 
 from samosa.core.state import ChainState
@@ -379,7 +383,7 @@ def scatter_matrix(
     img_kwargs: Optional[Dict[str, int]] = None,
     labels: Optional[List[str]] = None,
     sample_labels: Optional[List[str]] = None,
-) -> Tuple[plt.Figure, List[plt.Axes], GridSpec]:
+) -> Tuple[Figure, List[Axes], GridSpec]:
     """
     Create a nice scatter plot matrix of the samples.
     The marginals are on the diagonal and the joint distributions are on the off-diagonal.
@@ -427,51 +431,55 @@ def scatter_matrix(
 
     # Define a list of different colormaps to use for different samples
     cmap_list = [
-        plt.cm.viridis,
-        plt.cm.plasma,
-        plt.cm.cividis,
-        plt.cm.inferno,
-        plt.cm.magma,
+        plt.get_cmap("viridis"),
+        plt.get_cmap("plasma"),
+        plt.get_cmap("cividis"),
+        plt.get_cmap("inferno"),
+        plt.get_cmap("magma"),
     ]
 
     # Get the default Seaborn color palette
     colors = sns.color_palette("tab10")
 
-    if mins is None:
-        mins = np.zeros((dim))
-        maxs = np.zeros((dim))
+    if mins is None or maxs is None:
+        mins_arr = np.zeros((dim))
+        maxs_arr = np.zeros((dim))
 
         for ii in range(dim):
             mm = [np.quantile(samp[ii, :], 0.01, axis=0) for samp in samples]
-            mins[ii] = np.min(mm)
+            mins_arr[ii] = np.min(mm)
             mm = [np.quantile(samp[ii, :], 0.99, axis=0) for samp in samples]
-            maxs[ii] = np.max(mm)
+            maxs_arr[ii] = np.max(mm)
 
             if specials is not None:
                 if isinstance(specials, list):
-                    minspec = np.min(
-                        [
-                            spec["vals"][ii]
-                            for spec in specials
-                            if spec["vals"][ii] is not None
-                        ]
-                    )
-                    maxspec = np.max(
-                        [
-                            spec["vals"][ii]
-                            for spec in specials
-                            if spec["vals"][ii] is not None
-                        ]
-                    )
+                    vals_ii: List[float] = []
+                    for s in specials:
+                        if not isinstance(s, dict):
+                            continue
+                        v = s.get("vals")
+                        if v is None or ii >= len(v) or v[ii] is None:
+                            continue
+                        vals_ii.append(float(v[ii]))
+                    if vals_ii:
+                        minspec = np.min(vals_ii)
+                        maxspec = np.max(vals_ii)
+                        mins_arr[ii] = min(mins_arr[ii], minspec)
+                        maxs_arr[ii] = max(maxs_arr[ii], maxspec)
                 else:
-                    minspec = specials["vals"][ii]
-                    maxspec = specials["vals"][ii]
-                mins[ii] = min(mins[ii], minspec)
-                maxs[ii] = max(maxs[ii], maxspec)
-
-    deltas = (maxs - mins) / 10.0
-    use_mins = mins - deltas
-    use_maxs = maxs + deltas
+                    if isinstance(specials, dict):
+                        vals = specials.get("vals")
+                        if vals is not None and ii < len(vals):
+                            v_ii = vals[ii]
+                            if v_ii is not None:
+                                mins_arr[ii] = min(mins_arr[ii], float(v_ii))
+                                maxs_arr[ii] = max(maxs_arr[ii], float(v_ii))
+    else:
+        mins_arr = np.asarray(mins)
+        maxs_arr = np.asarray(maxs)
+    deltas = (maxs_arr - mins_arr) / 10.0
+    use_mins = mins_arr - deltas
+    use_maxs = maxs_arr + deltas
 
     fig = plt.figure(figsize=(18, 10))
     if upper_right is None:
@@ -510,15 +518,20 @@ def scatter_matrix(
         ax.tick_params(axis="y", left=False, right=False, labelleft=False)
         ax.set_frame_on(False)
 
-        # Use Gaussian KDE for the diagonal plots
+        # Use Gaussian KDE for the diagonal plots (suppress cov/dot warnings)
         for kk in range(nchains):
-            sampii = samples[kk][ii, :]
-            kde = gaussian_kde(sampii)
-            x_grid = np.linspace(use_mins[ii], use_maxs[ii], 1000)
-            ax.fill_between(
-                x_grid, 0, kde(x_grid), color=colors[kk % len(colors)], alpha=0.3
-            )
-            ax.plot(x_grid, kde(x_grid), color=colors[kk % len(colors)], alpha=0.7)
+            sampii = np.atleast_1d(samples[kk][ii, :]).astype(float)
+            if np.ptp(sampii) < 1e-12:
+                sampii = sampii + 1e-10 * (
+                    np.arange(sampii.size, dtype=float) % 2 - 0.5
+                )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                kde = gaussian_kde(sampii)
+                x_grid = np.linspace(use_mins[ii], use_maxs[ii], 1000)
+                z_kde = kde(x_grid)
+            ax.fill_between(x_grid, 0, z_kde, color=colors[kk % len(colors)], alpha=0.3)
+            ax.plot(x_grid, z_kde, color=colors[kk % len(colors)], alpha=0.7)
             # Plot vertical line for mean of this chain and dimension
             # ax.axvline(means[kk, ii], color=colors[kk % len(colors)], linestyle='--', lw=2)
 
@@ -579,12 +592,20 @@ def scatter_matrix(
                 cmap = cmap_list[
                     kk % len(cmap_list)
                 ]  # Choose a colormap for each sample set
-                data = np.vstack([samples[kk][ii, :], samples[kk][jj, :]])
-                kde = gaussian_kde(data)
-                x_grid = np.linspace(use_mins[ii], use_maxs[ii], nbins)
-                y_grid = np.linspace(use_mins[jj], use_maxs[jj], nbins)
-                X, Y = np.meshgrid(x_grid, y_grid)
-                Z = kde(np.vstack([X.ravel(), Y.ravel()])).reshape(X.shape)
+                data = np.vstack([samples[kk][ii, :], samples[kk][jj, :]]).astype(float)
+                for r in range(data.shape[0]):
+                    if np.ptp(data[r, :]) < 1e-12:
+                        data[r, :] = data[r, :] + 1e-10 * (
+                            np.arange(data.shape[1], dtype=float) % 2 - 0.5
+                        )
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    kde = gaussian_kde(data)
+                    n = nbins if nbins is not None else 100
+                    x_grid = np.linspace(float(use_mins[ii]), float(use_maxs[ii]), n)
+                    y_grid = np.linspace(float(use_mins[jj]), float(use_maxs[jj]), n)
+                    X, Y = np.meshgrid(x_grid, y_grid)
+                    Z = kde(np.vstack([X.ravel(), Y.ravel()])).reshape(X.shape)
 
                 if hist_plot:
                     max_z = Z.max()
@@ -723,13 +744,13 @@ def scatter_matrix(
         height = max(
             0.08, min(0.04 * nlabels, 0.25)
         )  # min and max for reasonable bounds
-        legend_ax = fig.add_axes([left, bottom, width, height])
+        legend_ax = fig.add_axes((left, bottom, width, height))
         legend_ax.axis("off")
         handles = []
         for kk in range(nchains):
             color = colors[kk % len(colors)]
             handles.append(
-                plt.Line2D(
+                Line2D(
                     [0],
                     [0],
                     marker="o",
@@ -756,7 +777,7 @@ def joint_plots(
     img_kwargs: Optional[Dict[str, int]] = None,
     labels: Optional[List[str]] = None,
     bins: int = 30,
-) -> List[plt.Figure]:
+) -> List[Figure]:
     """
     Create joint plots for pairs of dimensions (e.g., consecutive samples or different chains).
 
@@ -852,9 +873,9 @@ def joint_plots(
 def plot_trace(
     samples: Union[np.ndarray, List[np.ndarray]],
     img_kwargs: Optional[Dict] = None,
-    labels: Optional[List] = None,
-    sample_labels: Optional[List[str]] = None,
-) -> Tuple[plt.Figure, List[plt.Axes]]:
+    labels: Optional[List[str]] = None,
+    sample_labels: Optional[List[Optional[str]]] = None,
+) -> Tuple[Figure, List[Axes]]:
     """
     Plot the trace of the samples.
     Parameters
@@ -900,14 +921,16 @@ def plot_trace(
     colors = sns.color_palette("tab10")
 
     fig, axs = plt.subplots(dim, 1, figsize=(16, 8), sharex=True)
-
-    if dim == 1:
-        axs = [axs]  # Ensure axs is a list when dim=1
+    axs_list: List[Axes] = (
+        [axs] if dim == 1 else [axs[i] for i in range(dim)]  # type: ignore[index]
+    )
 
     for i in range(dim):
         for j, samp in enumerate(samples):
-            label = sample_labels[j] if j < len(sample_labels) else None
-            axs[i].plot(
+            label = (
+                sample_labels[j] if sample_labels and j < len(sample_labels) else None
+            )
+            axs_list[i].plot(
                 samp[i, :],
                 alpha=0.6,
                 color=colors[j % len(colors)],
@@ -915,42 +938,45 @@ def plot_trace(
                 label=label,
             )
 
-        axs[i].set_ylabel(f"{labels[i]}")
+        axs_list[i].set_ylabel(f"{labels[i]}")
 
         if i == 0 and len(samples) > 1:
-            axs[i].legend(loc="upper right", frameon=True, fancybox=True, shadow=True)
+            axs_list[i].legend(
+                loc="upper right", frameon=True, fancybox=True, shadow=True
+            )
 
-    axs[dim - 1].set_xlabel("Sample Number")
+    axs_list[dim - 1].set_xlabel("Sample Number")
 
     for i in range(dim):
-        axs[i].grid(False)
-        axs[i].spines["top"].set_color("black")
-        axs[i].spines["top"].set_linewidth(2)
-        axs[i].spines["right"].set_color("black")
-        axs[i].spines["right"].set_linewidth(2)
-        axs[i].spines["bottom"].set_color("black")
-        axs[i].spines["bottom"].set_linewidth(2)
-        axs[i].spines["left"].set_color("black")
-        axs[i].spines["left"].set_linewidth(2)
-        axs[i].xaxis.set_major_locator(plt.MaxNLocator(integer=True))
-        if axs[i].get_legend() is not None:
-            for label in (
-                axs[i].get_xticklabels()
-                + axs[i].get_yticklabels()
-                + axs[i].get_legend().get_texts()
-                + [axs[i].xaxis.label, axs[i].yaxis.label]
+        axs_list[i].grid(False)
+        axs_list[i].spines["top"].set_color("black")
+        axs_list[i].spines["top"].set_linewidth(2)
+        axs_list[i].spines["right"].set_color("black")
+        axs_list[i].spines["right"].set_linewidth(2)
+        axs_list[i].spines["bottom"].set_color("black")
+        axs_list[i].spines["bottom"].set_linewidth(2)
+        axs_list[i].spines["left"].set_color("black")
+        axs_list[i].spines["left"].set_linewidth(2)
+        axs_list[i].xaxis.set_major_locator(MaxNLocator(integer=True))
+        leg = axs_list[i].get_legend()
+        if leg is not None:
+            for lbl in (
+                axs_list[i].get_xticklabels()
+                + axs_list[i].get_yticklabels()
+                + leg.get_texts()
+                + [axs_list[i].xaxis.label, axs_list[i].yaxis.label]
             ):
-                label.set_color("black")
+                lbl.set_color("black")
         else:
-            for label in (
-                axs[i].get_xticklabels()
-                + axs[i].get_yticklabels()
-                + [axs[i].xaxis.label, axs[i].yaxis.label]
+            for lbl in (
+                axs_list[i].get_xticklabels()
+                + axs_list[i].get_yticklabels()
+                + [axs_list[i].xaxis.label, axs_list[i].yaxis.label]
             ):
-                label.set_color("black")
+                lbl.set_color("black")
         plt.tight_layout()
 
-    return fig, axs
+    return fig, axs_list
 
 
 def plot_lag(
@@ -959,8 +985,8 @@ def plot_lag(
     step: Optional[int] = 1,
     img_kwargs: Optional[Dict[str, int]] = None,
     labels: Optional[List[str]] = None,
-    sample_labels: Optional[List[str]] = None,
-) -> Tuple[plt.Figure, List[plt.Axes]]:
+    sample_labels: Optional[List[Optional[str]]] = None,
+) -> Tuple[Figure, Axes, List[np.ndarray], List[np.ndarray]]:
     """
     Plot the autocorrelation of the samples.
     Parameters
@@ -990,6 +1016,8 @@ def plot_lag(
 
     samples = _validate_samples(samples)
     img_kwargs = _setup_plot_style(img_kwargs)
+    maxlag_val = maxlag if maxlag is not None else 500
+    step_val = step if step is not None else 1
 
     # Compute autocorrelation for all sample sets
     all_autos = []
@@ -1003,7 +1031,7 @@ def plot_lag(
         all_ess.append(ess)
 
     if labels is None:
-        labels = [rf"$\theta_{ii + 1}$" for ii in range(samples[0].shape[0])]
+        labels = [rf"$\theta_{{{ii + 1}}}$" for ii in range(samples[0].shape[0])]
 
     if sample_labels is None and len(samples) > 1:
         sample_labels = [f"Chain {i + 1}" for i in range(len(samples))]
@@ -1037,21 +1065,26 @@ def plot_lag(
     dim = samples[0].shape[0]
     fig, axs = plt.subplots(1, 1, figsize=(8, 6), sharex=True)
 
-    lags = np.arange(1, maxlag + 1, step)
+    lags = np.arange(1, maxlag_val + 1, step_val)
     for i in range(dim):
         for j, autos in enumerate(all_autos):
             marker = markers[i % len(markers)]
             color = colors[(i * len(samples) + j) % len(colors)]
 
             # Create label combining dimension and sample labels
-            if len(samples) > 1 and sample_labels[j] is not None:
+            if (
+                len(samples) > 1
+                and sample_labels
+                and j < len(sample_labels)
+                and sample_labels[j] is not None
+            ):
                 label = f"{labels[i]} ({sample_labels[j]})"
             else:
                 label = f"{labels[i]}"
 
             axs.plot(
                 lags,
-                autos[i, :maxlag],
+                autos[i, lags],
                 marker,
                 label=label,
                 alpha=0.2,
@@ -1079,7 +1112,7 @@ def plot_lag(
     axs.spines["bottom"].set_linewidth(2)
     axs.spines["left"].set_color("black")
     axs.spines["left"].set_linewidth(2)
-    axs.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+    axs.xaxis.set_major_locator(MaxNLocator(integer=True))
     if axs.get_legend() is not None:
         for label in (
             axs.get_xticklabels()
@@ -1158,6 +1191,8 @@ def autocorrelation(
     ess : np.ndarray of shape (ndim,)
         Effective sample size per dimension.
     """
+    c_val = c if c is not None else 5
+    tol_val = tol if tol is not None else 50
     ndim, nsamples = samples.shape
 
     # Check if the samples are in the correct format
@@ -1176,12 +1211,12 @@ def autocorrelation(
         acf = function_1d(samples[d])
         autos[d, :] = acf
         tau_seq = 2.0 * np.cumsum(acf) - 1.0
-        window = auto_window(tau_seq, c)
+        window = auto_window(tau_seq, c_val)
         taus[d] = tau_seq[window]
         windows[d] = window
 
     # Check convergence
-    flag = tol * taus > nsamples
+    flag = tol_val * taus > nsamples
 
     # Warn or raise in the case of non-convergence
     if np.any(flag):
@@ -1189,8 +1224,8 @@ def autocorrelation(
             "The chain is shorter than {0} times the integrated "
             "autocorrelation time for {1} parameter(s). Use this estimate "
             "with caution and run a longer chain!\n"
-        ).format(tol, np.sum(flag))
-        msg += "N/{0} = {1:.0f};\ntau: {2}".format(tol, nsamples / tol, taus)
+        ).format(tol_val, np.sum(flag))
+        msg += "N/{0} = {1:.0f};\ntau: {2}".format(tol_val, nsamples / tol_val, taus)
 
     ess = np.ceil(nsamples / taus)
     return autos, taus, ess

@@ -134,3 +134,103 @@ def test_e2e_chain(kernel, current_state):
             states.append(states[-1])
         kernel.adapt(states[-1])
     assert len(states) == 6
+
+
+def test_e2e_unseen_gaussian_posterior(gaussian_posterior_2d):
+    """E2e with unseen Gaussian posterior: short chain, log_posterior consistent, AR in [0,1]."""
+    proposal = GaussianRandomWalk(mu=np.zeros((2, 1)), cov=0.15 * np.eye(2))
+    kernel = MetropolisHastingsKernel(gaussian_posterior_2d, proposal)
+    current = ChainState(
+        position=np.array([[0.5], [-0.3]]),
+        log_posterior=float(
+            gaussian_posterior_2d(np.array([[0.5], [-0.3]]))["log_posterior"]
+        ),
+        metadata={"iteration": 1, "mean": np.zeros((2, 1)), "covariance": np.eye(2)},
+    )
+    np.random.seed(123)
+    states = [current]
+    for _ in range(15):
+        proposed = kernel.propose(states[-1])
+        expected_logp = float(gaussian_posterior_2d(proposed.position)["log_posterior"])
+        assert np.isclose(proposed.log_posterior, expected_logp), (
+            "log_posterior should match model"
+        )
+        ar = kernel.acceptance_ratio(states[-1], proposed)
+        assert 0 <= ar <= 1 and np.isfinite(ar)
+        u = np.random.rand()
+        if ar == 1.0 or u < ar:
+            states.append(proposed)
+        else:
+            states.append(states[-1])
+        kernel.adapt(states[-1])
+    assert len(states) == 16
+    for s in states:
+        assert s.log_posterior is not None and np.isfinite(s.log_posterior)
+
+
+def test_e2e_unseen_gaussian_components(gaussian_posterior_components_2d):
+    """E2e with component-based unseen posterior; ChainState gets log_posterior from components."""
+    proposal = GaussianRandomWalk(mu=np.zeros((2, 1)), cov=0.1 * np.eye(2))
+    kernel = MetropolisHastingsKernel(gaussian_posterior_components_2d, proposal)
+    out = gaussian_posterior_components_2d(np.array([[0.0], [0.0]]))
+    current = ChainState(
+        position=np.array([[0.0], [0.0]]),
+        log_prior=out["log_prior"],
+        log_likelihood=out["log_likelihood"],
+        metadata={"iteration": 1},
+    )
+    np.random.seed(44)
+    proposed = kernel.propose(current)
+    assert proposed.log_posterior is not None
+    assert np.isfinite(proposed.log_posterior)
+    ar = kernel.acceptance_ratio(current, proposed)
+    assert 0 <= ar <= 1
+
+
+def test_propose_passes_through_reference_position(model, current_state):
+    """Propose passes through reference_position from proposal to proposed state (transport compat)."""
+    proposal = GaussianRandomWalk(mu=np.zeros((2, 1)), cov=0.1 * np.eye(2))
+    kernel = MetropolisHastingsKernel(model, proposal)
+    state_with_ref = ChainState(
+        position=current_state.position,
+        reference_position=np.array([[0.1], [0.2]]),
+        log_posterior=current_state.log_posterior,
+        metadata=current_state.metadata,
+    )
+    proposed = kernel.propose(state_with_ref)
+    assert proposed.reference_position is None  # GRW does not set it
+
+    from samosa.core.proposal import ProposalBase, TransportProposalBase
+
+    class IdentityMap:
+        def forward(self, x):
+            return x, 0.0
+
+        def inverse(self, r):
+            return r, 0.0
+
+        def adapt(self, *args, **kwargs):
+            pass
+
+    class BaseInRef(ProposalBase):
+        def __init__(self):
+            super().__init__(mu=np.zeros((2, 1)), cov=0.1 * np.eye(2))
+
+        def sample(self, state, eta=None):
+            step = np.array([[0.05], [0.05]])
+            return ChainState(position=state.position + step)
+
+        def proposal_logpdf(self, c, p):
+            return 0.0, 0.0
+
+    transport = TransportProposalBase(BaseInRef(), IdentityMap())
+    kernel_ref = MetropolisHastingsKernel(model, transport)
+    init = ChainState(
+        position=np.array([[0.0], [0.0]]),
+        reference_position=np.array([[0.0], [0.0]]),
+        log_posterior=0.0,
+        metadata={},
+    )
+    prop = kernel_ref.propose(init)
+    assert prop.reference_position is not None
+    assert prop.reference_position.shape == (2, 1)

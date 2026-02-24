@@ -52,7 +52,7 @@ def lognormpdf(
     ``np.linalg.solve(cov, diff)`` instead of inverting cov.
     """
     if np.isscalar(x):
-        x = np.array([[float(x)]])
+        x = np.asarray(x, dtype=np.float64).reshape(1, 1)
     elif isinstance(x, np.ndarray) and x.ndim == 1:
         x = x[:, np.newaxis]
 
@@ -130,10 +130,35 @@ def _get_log_posterior(
     model: Union[ModelProtocol, Callable[..., object]], x: np.ndarray
 ) -> float:
     """Return log_posterior from model(x); support dict or scalar return."""
-    out = model(x)
+    x_arr = np.asarray(x)
+    # SciPy optimizers (e.g. BFGS) pass x as a 1D vector; our ModelProtocol
+    # expects (d, 1). Normalize here so laplace_approx works with SAMOSA models.
+    if np.isscalar(x_arr) or x_arr.ndim == 0:
+        x_arr = np.asarray([[x_arr]], dtype=float)
+    elif x_arr.ndim == 1:
+        x_arr = x_arr.reshape(-1, 1)
+    elif x_arr.ndim == 2:
+        if x_arr.shape[1] != 1:
+            raise ValueError(
+                "Model evaluation expects a single point shaped (d, 1); "
+                f"got array with shape {x_arr.shape}."
+            )
+    else:
+        raise ValueError(
+            "Model evaluation expects an array of shape (d, 1); "
+            f"got array with ndim={x_arr.ndim} and shape {x_arr.shape}."
+        )
+
+    out = model(x_arr)
     if isinstance(out, dict):
         return float(out["log_posterior"])
-    return float(out)
+    if isinstance(out, (int, float, np.floating, np.integer)):
+        return float(out)
+    if isinstance(out, np.ndarray) and out.ndim == 0:
+        return float(out.item())
+    raise TypeError(
+        "model(x) must return a dict with 'log_posterior' or a numeric scalar."
+    )
 
 
 def laplace_approx(
@@ -163,11 +188,6 @@ def laplace_approx(
         MAP point.
     cov_approx : numpy.ndarray of shape (d, d)
         Approximate covariance (inverse Hessian at MAP).
-
-    Notes
-    -----
-    Prints are replaced with logging. For diagnostics, consider returning
-    the optimization result as a third element in a future version.
     """
     if x0.ndim != 2 or x0.shape[1] != 1:
         raise ValueError("x0 must be a column vector of shape (d, 1)")
@@ -228,8 +248,11 @@ def log_banana(
     logpdf : float or numpy.ndarray of shape (N,)
         Log PDF value(s).
     """
+    x = np.asarray(x, dtype=float)
+    if x.ndim == 1:
+        x = x.reshape(-1, 1)
     if x.ndim != 2:
-        raise ValueError("x must be a 2D array of shape (d, N)")
+        raise ValueError("x must be a 2D array of shape (d, N) or 1D array of length d")
     if mu is None:
         mu = np.zeros((x.shape[0], 1))
     if sigma is None:
@@ -400,3 +423,21 @@ def batched_variance(
 
     variance = np.divide(M2, count - 1, out=np.zeros_like(M2), where=count > 1)
     return variance
+
+
+if __name__ == "__main__":
+    from samosa.utils.tools import laplace_approx, log_banana
+    from typing import Dict, Any
+
+    def banana_model(params: np.ndarray) -> Dict[str, Any]:
+        lp = log_banana(params)
+        log_posterior = float(np.atleast_1d(lp).item())
+        output = {"log_posterior": log_posterior}
+        output["cost"] = 2
+        output["qoi"] = np.sum(params, axis=0)
+        return output
+
+    # Laplace approximation for mean and covariance (MAP point + inverse Hessian)
+    map_point, cov_approx = laplace_approx(np.zeros((2, 1)), banana_model)
+    print(f"MAP point: {map_point}")
+    print(f"Covariance approximation: {cov_approx}")

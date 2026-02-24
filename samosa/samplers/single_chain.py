@@ -1,9 +1,10 @@
 """
 Single-chain MCMC sampler.
 
-Orchestrates a single-fidelity kernel and proposal to run one chain;
-supports MH-style and delayed-rejection kernels. Kernels hold their own
-model and proposal; the sampler drives the loop: propose -> accept/reject -> adapt.
+Orchestrates a single-fidelity kernel to run one chain; supports MH-style
+and delayed-rejection kernels. The kernel owns model and proposal; the
+sampler drives the loop (propose -> accept/reject -> adapt) and uses the
+kernel's proposal for initial metadata and optional map saving.
 """
 
 from __future__ import annotations
@@ -12,16 +13,20 @@ import copy
 import logging
 import os
 import pickle
+from dataclasses import replace
 from typing import List, Optional
 
 import numpy as np
 
 from samosa.core.state import ChainState
-from samosa.core.proposal import Proposal
 from samosa.kernels.metropolis import MetropolisHastingsKernel
 from samosa.kernels.delayedrejection import DelayedRejectionKernel
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,  # or DEBUG
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 
 
 class SingleChainSampler:
@@ -36,8 +41,6 @@ class SingleChainSampler:
     ----------
     kernel : MetropolisHastingsKernel | DelayedRejectionKernel
         The transition kernel (holds model and proposal).
-    proposal : Proposal
-        The proposal distribution (used for initial state metadata only).
     initial_state : ChainState
         Initial state of the chain.
     n_iterations : int
@@ -53,7 +56,6 @@ class SingleChainSampler:
     def __init__(
         self,
         kernel: MetropolisHastingsKernel | DelayedRejectionKernel,
-        proposal: Proposal,
         initial_position: np.ndarray,
         n_iterations: int,
         print_iteration: Optional[int] = None,
@@ -63,17 +65,30 @@ class SingleChainSampler:
         dim = initial_position.shape[0]
         self.dim = dim
         self.kernel = kernel
-        self.proposal = proposal
         self.model = kernel.model
+        proposal = kernel.proposal
         self.restart = restart
 
         if self.restart is not None:
-            self.initial_state = self.restart[-1]
-            meta = self.restart[-1].metadata or {}
+            initial = self.restart[-1]
+            # When using a transport proposal, ensure restarted state has reference_position
+            tmap = getattr(proposal, "map", None)
+            if tmap is not None and initial.reference_position is None:
+                ref_pos, _ = tmap.forward(initial.position)
+                self.initial_state = replace(initial, reference_position=ref_pos)
+            else:
+                self.initial_state = initial
+            meta = self.initial_state.metadata or {}
             self.start_iteration = meta.get("iteration", 0) + 1
         else:
+            # For transport proposals, set reference_position so all states have it
+            ref_pos: Optional[np.ndarray] = None
+            tmap = getattr(proposal, "map", None)
+            if tmap is not None:
+                ref_pos, _ = tmap.forward(initial_position)
             self.initial_state = ChainState(
                 position=initial_position,
+                reference_position=ref_pos,
                 **self.model(initial_position),
                 metadata={
                     "covariance": proposal.cov.copy(),
@@ -104,6 +119,10 @@ class SingleChainSampler:
             Acceptance rate over the run. None if no iterations run.
         """
         os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(f"{output_dir}/samples", exist_ok=True)
+        save_map = getattr(self.kernel.proposal, "save_map", None)
+        if save_map is not None:
+            os.makedirs(f"{output_dir}/maps", exist_ok=True)
 
         current_state = self.initial_state
         if self.restart is not None:
@@ -180,8 +199,6 @@ class SingleChainSampler:
         Uses the same iteration number for both so sample and map checkpoints stay in sync.
         No separate counter is needed; the MCMC iteration is the checkpoint identifier.
         """
-        os.makedirs(f"{output_dir}/samples", exist_ok=True)
-        os.makedirs(f"{output_dir}/maps", exist_ok=True)
         if final_checkpoint:
             path = f"{output_dir}/samples.pkl"
         else:
@@ -189,7 +206,7 @@ class SingleChainSampler:
         with open(path, "wb") as f:
             pickle.dump(samples, f)
         logger.info("Checkpoint saved: iteration=%s, path=%s", iteration, path)
-        save_map = getattr(self.proposal, "save_map", None)
+        save_map = getattr(self.kernel.proposal, "save_map", None)
         if save_map is not None:
             # Proposal.save_map(output_dir, iteration) builds path as output_dir/map_{iteration}
             map_dir = output_dir if final_checkpoint else f"{output_dir}/maps"

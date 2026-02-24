@@ -109,7 +109,6 @@ class MLDASampler:
             if L == 1:
                 sampler = MCMCsampler(
                     kernel,
-                    proposal,
                     current_state.position,
                     subchain_lengths[0],
                     print_iteration=self.print_iteration,

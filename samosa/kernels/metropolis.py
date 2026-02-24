@@ -43,7 +43,7 @@ class MetropolisHastingsKernel:
             position=proposed.position,
             reference_position=proposed.reference_position,
             **model_result,
-            metadata=state.metadata.copy() if state.metadata is not None else None,
+            metadata=(state.metadata.copy() if state.metadata else {}),
         )
         return proposed_state
 

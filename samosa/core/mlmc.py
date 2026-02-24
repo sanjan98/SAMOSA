@@ -1,24 +1,46 @@
 """
 Simple Multi-Level Monte Carlo wrapper.
-This wrapper manages multiple fidelity levels and distributes them across MPI processes.
+
+This wrapper manages multiple fidelity levels and distributes them across MPI
+processes. Each coupled chain (level) runs on a separate MPI rank when enough
+ranks are available.
+
+Nested parallelism (models using MPI internally)
+-----------------------------------------------
+When model evaluations (e.g., CFD solvers) use MPI internally, use
+``split_comm_for_levels()`` to split COMM_WORLD by level. Each level gets a
+sub-communicator; pass that sub-comm to your model so it can use it for internal
+parallelism. Example layout with 8 ranks and 4 levels:
+  - Ranks 0-1: level 0 (sub_comm size 2)
+  - Ranks 2-3: level 1 (sub_comm size 2)
+  - etc.
+The CFD solver in each level receives its sub-comm and uses it for domain
+decomposition. Coarse and fine within a level run sequentially, so they share
+the same sub-comm.
 """
 
+from __future__ import annotations
+
+import logging
 import os
 import pickle
 import time
+import warnings
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Sequence, Tuple, Union, cast
 
 import numpy as np
 import matplotlib.pyplot as plt
 from mpi4py import MPI
 
-from samosa.core.kernel import KernelProtocol
+from samosa.core.kernel import CoupledKernelBase
 from samosa.core.model import ModelProtocol
-from samosa.core.proposal import ProposalBase
+from samosa.core.proposal import Proposal
 from samosa.core.state import ChainState
-from samosa.samplers.coupled_chain import coupledMCMCsampler
-from samosa.samplers.single_chain import MCMCsampler
+from samosa.kernels.delayedrejection import DelayedRejectionKernel
+from samosa.kernels.metropolis import MetropolisHastingsKernel
+from samosa.samplers.coupled_chain import CoupledChainSampler
+from samosa.samplers.single_chain import SingleChainSampler
 from samosa.utils.post_processing import (
     load_samples,
     load_coupled_samples,
@@ -29,6 +51,12 @@ from samosa.utils.post_processing import (
     joint_plots,
 )
 from samosa.utils.tools import batched_variance
+
+logger = logging.getLogger(__name__)
+
+# Type alias for kernels: level 0 uses single-chain, level > 0 uses coupled
+SingleChainKernel = Union[MetropolisHastingsKernel, DelayedRejectionKernel]
+LevelKernel = Union[SingleChainKernel, CoupledKernelBase]
 
 
 def distribute_level_list_across_ranks(
@@ -77,6 +105,44 @@ def distribute_level_list_across_ranks(
     return my_levels
 
 
+def split_comm_for_levels(
+    comm: MPI.Comm,
+    num_levels: int,
+    rank: int,
+) -> Tuple[MPI.Comm, int]:
+    """
+    Split MPI communicator so each level gets a sub-communicator for nested parallelism.
+
+    Use this when model evaluations (e.g., CFD solvers) use MPI internally. Each level
+    runs on a disjoint subset of ranks; those ranks form a sub-communicator that the
+    model can use for its internal parallelism.
+
+    Example: 8 ranks, 4 levels -> ranks 0-1 for level 0, 2-3 for level 1, etc.
+    Each level's model receives its sub-comm (size 2) for CFD parallelism.
+
+    Args:
+        comm: MPI communicator (e.g., MPI.COMM_WORLD).
+        num_levels: Number of MLMC levels.
+        rank: Current rank in comm.
+
+    Returns:
+        Tuple of (sub_comm, sub_rank). Ranks not assigned to any level get
+        sub_comm=MPI.COMM_NULL. Assigned ranks get a sub-communicator and their
+        rank within it.
+    """
+    size = comm.Get_size()
+    if size < num_levels:
+        # Not enough ranks for splitting; each level uses full comm or single rank
+        return comm, rank
+    ranks_per_level = size // num_levels
+    level_color = rank // ranks_per_level
+    if level_color >= num_levels:
+        return MPI.COMM_NULL, -1
+    sub_comm = comm.Split(level_color, rank)
+    sub_rank = sub_comm.Get_rank()
+    return sub_comm, sub_rank
+
+
 @dataclass
 class MLMCLevel:
     """Configuration for a single MLMC level"""
@@ -84,9 +150,9 @@ class MLMCLevel:
     level: int
     coarse_model: Optional[ModelProtocol]  # None for level 0
     fine_model: ModelProtocol
-    coarse_proposal: Optional[ProposalBase]  # None for level 0
-    fine_proposal: ProposalBase
-    kernel: KernelProtocol
+    coarse_proposal: Optional[Proposal]  # None for level 0
+    fine_proposal: Proposal
+    kernel: LevelKernel
     n_samples: int
     initial_position_coarse: Optional[np.ndarray] = None  # None for level 0
     initial_position_fine: Optional[np.ndarray] = None
@@ -136,8 +202,10 @@ class MLMCSampler:
         if self.rank == 0:
             os.makedirs(output_dir, exist_ok=True)
             if self.print_progress:
-                print(
-                    f"MLMC Sampler Setup: {len(self.levels)} levels, {self.size} MPI processes"
+                logger.info(
+                    "MLMC Sampler Setup: %s levels, %s MPI processes",
+                    len(self.levels),
+                    self.size,
                 )
         self.comm.Barrier()
 
@@ -145,8 +213,8 @@ class MLMCSampler:
         """Run only the sampling part - saves samples to files"""
 
         if self.rank == 0 and self.print_progress:
-            print("Starting MLMC sampling...")
-            print(f"Total samples: {[level.n_samples for level in self.levels]}")
+            logger.info("Starting MLMC sampling...")
+            logger.info("Total samples: %s", [level.n_samples for level in self.levels])
 
         # Distribute levels across processes
         levels_list = list(range(len(self.levels)))
@@ -159,61 +227,85 @@ class MLMCSampler:
             level = self.levels[level_idx]
 
             if self.print_progress:
-                print(f"Process {self.rank}: Starting level {level.level}")
+                logger.info("Process %s: Starting level %s", self.rank, level.level)
 
             start_time = time.time()
             self._sample_level(level)
             end_time = time.time()
 
             if self.print_progress:
-                print(
-                    f"Process {self.rank}: Completed level {level.level} in {end_time - start_time:.2f}s"
+                logger.info(
+                    "Process %s: Completed level %s in %.2fs",
+                    self.rank,
+                    level.level,
+                    end_time - start_time,
                 )
 
         if self.rank == 0 and self.print_progress:
-            print(
+            logger.info(
                 "MLMC sampling complete! Files saved to individual level directories."
             )
 
     def _sample_level(self, level: MLMCLevel) -> None:
-        """Sample a single MLMC level and save to files"""
+        """Sample a single MLMC level and save to files."""
 
         level_output_dir = f"{self.output_dir}/level_{level.level}"
+        print_iter = max(int(level.n_samples // 10), 1)
+        save_iter = max(int(level.n_samples // 5), 1) if level.n_samples > 100 else None
 
         if level.level == 0:
             # Level 0: single chain sampling of finest model only
+            if level.initial_position_fine is None:
+                raise ValueError("Level 0 requires initial_position_fine")
             if self.rank == 0 and self.print_progress:
-                print(f"Sampling Level 0: {level.n_samples} samples (fine model only)")
+                logger.info(
+                    "Sampling Level 0: %s samples (fine model only)", level.n_samples
+                )
 
-            sampler = MCMCsampler(
-                kernel=level.kernel,
-                proposal=level.fine_proposal,
+            sampler = SingleChainSampler(
+                kernel=cast(SingleChainKernel, level.kernel),
                 initial_position=level.initial_position_fine,
                 n_iterations=level.n_samples,
-                print_iteration=max(int(level.n_samples // 10), 1),
+                print_iteration=print_iter,
+                save_iteration=save_iter,
+                restart=level.restart_fine,
             )
 
             ar = sampler.run(level_output_dir)
             with open(f"{level_output_dir}/acceptance_rate.txt", "w") as f:
-                f.write(f"acceptance_rate: {ar}\n")
+                f.write(f"acceptance_rate: {ar if ar is not None else 0.0}\n")
         else:
             # Level > 0: coupled chain sampling
+            if (
+                level.initial_position_coarse is None
+                or level.initial_position_fine is None
+            ):
+                raise ValueError(
+                    "Level > 0 requires both initial_position_coarse and initial_position_fine"
+                )
             if self.rank == 0 and self.print_progress:
-                print(
-                    f"Sampling Level {level.level}: {level.n_samples} samples (coupled chains)"
+                logger.info(
+                    "Sampling Level %s: %s samples (coupled chains)",
+                    level.level,
+                    level.n_samples,
                 )
 
-            sampler = coupledMCMCsampler(
-                kernel=level.kernel,
-                proposal_coarse=level.coarse_proposal,
+            sampler = CoupledChainSampler(
+                kernel=cast(CoupledKernelBase, level.kernel),
+                proposal_coarse=cast(Proposal, level.coarse_proposal),
                 proposal_fine=level.fine_proposal,
                 initial_position_coarse=level.initial_position_coarse,
                 initial_position_fine=level.initial_position_fine,
                 n_iterations=level.n_samples,
-                print_iteration=max(int(level.n_samples // 10), 1),
+                print_iteration=print_iter,
+                save_iteration=save_iter,
+                restart_coarse=level.restart_coarse,
+                restart_fine=level.restart_fine,
             )
 
-            ar_coarse, ar_fine = sampler.run(level_output_dir)
+            result = sampler.run(level_output_dir)
+            ar_coarse = result[0] if result is not None else 0.0
+            ar_fine = result[1] if result is not None else 0.0
             with open(f"{level_output_dir}/acceptance_rates.txt", "w") as f:
                 f.write(f"ar_coarse: {ar_coarse}\n")
                 f.write(f"ar_fine: {ar_fine}\n")
@@ -259,7 +351,9 @@ class MLMCCalculator:
         self.rank = self.comm.Get_rank()
         self.size = self.comm.Get_size()
 
-    def compute_mlmc_estimator(self, burnin_fraction: float = 0.25) -> MLMCResults:
+    def compute_mlmc_estimator(
+        self, burnin_fraction: float = 0.25
+    ) -> Optional[MLMCResults]:
         """
         Compute MLMC estimator from saved samples
 
@@ -271,7 +365,9 @@ class MLMCCalculator:
         """
 
         if self.rank == 0 and self.print_progress:
-            print(f"Computing MLMC estimator with burnin fraction: {burnin_fraction}")
+            logger.info(
+                "Computing MLMC estimator with burnin fraction: %s", burnin_fraction
+            )
 
         # Distribute levels across ranks for processing
         levels_list = list(range(self.num_levels))
@@ -284,7 +380,7 @@ class MLMCCalculator:
 
         for level in my_levels:
             if self.print_progress:
-                print(f"Process {self.rank}: Processing level {level}")
+                logger.info("Process %s: Processing level %s", self.rank, level)
 
             level_dir = f"{self.output_dir}/level_{level}"
 
@@ -312,13 +408,13 @@ class MLMCCalculator:
             }
 
             if self.print_progress:
-                print(f"Process {self.rank}: Completed level {level}")
+                logger.info("Process %s: Completed level %s", self.rank, level)
 
         # Gather results from all processes
-        all_results = self.comm.gather(local_results, root=0)
+        all_results: Optional[List[dict]] = self.comm.gather(local_results, root=0)
 
         # Combine and return results on root process
-        if self.rank == 0:
+        if self.rank == 0 and all_results is not None:
             # Combine results from all processes
             combined_results = {}
             for proc_results in all_results:
@@ -336,11 +432,15 @@ class MLMCCalculator:
             ]
             levels_completed = [combined_results[i]["level"] for i in sorted_levels]
 
-            # Compute MLMC estimator
-            mlmc_expectation = sum(level_means)
-            mlmc_variance = sum(
-                var / n_samples
-                for var, n_samples in zip(level_variances, samples_per_level)
+            # Compute MLMC estimator (ensure ndarray for scalar QoI)
+            mlmc_expectation = np.atleast_1d(np.asarray(sum(level_means)))
+            mlmc_variance = np.atleast_1d(
+                np.asarray(
+                    sum(
+                        var / n_samples
+                        for var, n_samples in zip(level_variances, samples_per_level)
+                    )
+                )
             )
 
             # Create results object
@@ -360,22 +460,21 @@ class MLMCCalculator:
                 pickle.dump(results, f)
 
             if self.print_progress:
-                print("\n" + "=" * 50)
-                print("MLMC ESTIMATION COMPLETE")
-                print("=" * 50)
-                print(f"Levels completed: {levels_completed}")
-                print(f"Samples per level: {samples_per_level}")
-                print(f"Burnin fraction: {burnin_fraction}")
-                print(f"MLMC expectation shape: {mlmc_expectation.shape}")
-                print(f"MLMC variance shape: {mlmc_variance.shape}")
-                print(f"Results saved to: {self.output_dir}/mlmc_results.pkl")
-                print("=" * 50)
+                logger.info("=" * 50)
+                logger.info("MLMC ESTIMATION COMPLETE")
+                logger.info("Levels completed: %s", levels_completed)
+                logger.info("Samples per level: %s", samples_per_level)
+                logger.info("Burnin fraction: %s", burnin_fraction)
+                logger.info("MLMC expectation shape: %s", mlmc_expectation.shape)
+                logger.info("MLMC variance shape: %s", mlmc_variance.shape)
+                logger.info("Results saved to: %s/mlmc_results.pkl", self.output_dir)
 
+            return results
         return None
 
     def _compute_qoi_differences(
         self,
-        samples_coarse: List[ChainState],
+        samples_coarse: Sequence[Optional[ChainState]],
         samples_fine: List[ChainState],
         burnin: float = 0.25,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -388,11 +487,18 @@ class MLMCCalculator:
         qoi_fine_list = []
         qoi_coarse_list = []
         for i in range(start, n_samples):
-            qoi_fine = np.atleast_1d(samples_fine[i].qoi)
+            qoi_f = samples_fine[i].qoi
+            qoi_fine = np.atleast_1d(
+                qoi_f if qoi_f is not None else samples_fine[i].position
+            ).flatten()
             qoi_fine_list.append(qoi_fine)
 
-            if samples_coarse[i] is not None:
-                qoi_coarse = np.atleast_1d(samples_coarse[i].qoi)
+            coarse_i = samples_coarse[i]
+            if coarse_i is not None:
+                qoi_c = coarse_i.qoi
+                qoi_coarse = np.atleast_1d(
+                    qoi_c if qoi_c is not None else coarse_i.position
+                ).flatten()
                 qoi_coarse_list.append(qoi_coarse)
                 diff = qoi_fine - qoi_coarse
             else:
@@ -401,7 +507,8 @@ class MLMCCalculator:
 
             differences.append(diff)
 
-        differences = np.array(differences).T
+        # Stack as (d, N) for batched_variance
+        differences = np.vstack(differences).T
         mean_diff = np.mean(differences, axis=1)
         variance_diff = batched_variance(differences)
 
@@ -412,14 +519,17 @@ class MLMCCalculator:
         qoi_fine_valid = qoi_fine_arr[valid_mask]
         qoi_coarse_valid = qoi_coarse_arr[valid_mask]
 
-        # Compute per-dimension correlation
+        # Compute per-dimension correlation (suppress divide-by-zero for constant QoI)
         if qoi_fine_valid.shape[0] > 1:
-            correlations = np.array(
-                [
-                    np.corrcoef(qoi_fine_valid[:, d], qoi_coarse_valid[:, d])[0, 1]
-                    for d in range(qoi_fine_valid.shape[1])
-                ]
-            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                correlations = np.array(
+                    [
+                        np.corrcoef(qoi_fine_valid[:, d], qoi_coarse_valid[:, d])[0, 1]
+                        for d in range(qoi_fine_valid.shape[1])
+                    ]
+                )
+            correlations = np.nan_to_num(correlations, nan=1.0, posinf=1.0, neginf=-1.0)
         else:
             correlations = np.full(qoi_fine_valid.shape[1], 1.0)
 
@@ -437,24 +547,20 @@ class MLMCCalculator:
         if self.rank == 0:
             results = self.load_mlmc_results()
 
-            print(f"\n{'=' * 60}")
-            print("MLMC ESTIMATION SUMMARY")
-            print(f"{'=' * 60}")
-
-            print(f"Levels completed: {results.levels_completed}")
-            print(f"Samples per level: {results.samples_per_level}")
-            print(f"MLMC expectation: {results.mlmc_expectation}")
-            print(f"MLMC variance: {results.mlmc_variance}")
-
-            print("\nLevel-wise statistics:")
+            logger.info("=" * 60)
+            logger.info("MLMC ESTIMATION SUMMARY")
+            logger.info("Levels completed: %s", results.levels_completed)
+            logger.info("Samples per level: %s", results.samples_per_level)
+            logger.info("MLMC expectation: %s", results.mlmc_expectation)
+            logger.info("MLMC variance: %s", results.mlmc_variance)
+            logger.info("Level-wise statistics:")
             for i, level in enumerate(results.levels_completed):
-                print(f"  Level {level}:")
-                print(f"    Mean: {results.level_means[i]}")
-                print(f"    Variance: {results.level_variances[i]}")
-                print(f"    Samples: {results.samples_per_level[i]}")
-                print(f"    Correlations: {results.level_correlations[i]}")
-
-            print(f"{'=' * 60}\n")
+                logger.info("  Level %s:", level)
+                logger.info("    Mean: %s", results.level_means[i])
+                logger.info("    Variance: %s", results.level_variances[i])
+                logger.info("    Samples: %s", results.samples_per_level[i])
+                logger.info("    Correlations: %s", results.level_correlations[i])
+            logger.info("=" * 60)
 
 
 class MLMCPostProcessor:
@@ -492,12 +598,12 @@ class MLMCPostProcessor:
         """
 
         if self.rank == 0 and self.print_progress:
-            print(f"\n{'=' * 70}")
-            print("MLMC POST-PROCESSING")
-            print(f"Processing levels: {levels}")
-            print(f"Burnin fraction: {burnin_fraction}")
-            print(f"MPI processes: {self.size}")
-            print(f"{'=' * 70}")
+            logger.info("=" * 70)
+            logger.info("MLMC POST-PROCESSING")
+            logger.info("Processing levels: %s", levels)
+            logger.info("Burnin fraction: %s", burnin_fraction)
+            logger.info("MPI processes: %s", self.size)
+            logger.info("=" * 70)
 
         # Set default image parameters
         if img_kwargs is None:
@@ -515,11 +621,11 @@ class MLMCPostProcessor:
         )
 
         if self.print_progress:
-            print(f"Process {self.rank}: Assigned levels {my_levels}")
+            logger.info("Process %s: Assigned levels %s", self.rank, my_levels)
 
         for level in my_levels:
             if self.print_progress:
-                print(f"Process {self.rank}: Processing level {level}...")
+                logger.info("Process %s: Processing level %s...", self.rank, level)
 
             try:
                 # Load samples for this level
@@ -551,44 +657,45 @@ class MLMCPostProcessor:
                 )
 
                 if self.print_progress:
-                    print(f"Process {self.rank}: Level {level} completed")
+                    logger.info("Process %s: Level %s completed", self.rank, level)
 
             except Exception as e:
                 if self.print_progress:
-                    print(
-                        f"Process {self.rank}: Error processing level {level}: {str(e)}"
+                    logger.warning(
+                        "Process %s: Error processing level %s: %s",
+                        self.rank,
+                        level,
+                        str(e),
                     )
                 continue
 
         if self.print_progress:
-            print(f"\n{'=' * 70}")
-            print("POST-PROCESSING COMPLETE")
-            print(f"{'=' * 70}\n")
+            logger.info("=" * 70)
+            logger.info("POST-PROCESSING COMPLETE")
+            logger.info("=" * 70)
 
     def _load_samples_for_level(
         self, level: int
-    ) -> Tuple[List[ChainState], List[ChainState]]:
+    ) -> Tuple[List[Optional[ChainState]], List[ChainState]]:
         """Load samples for a specific level with burnin"""
-
-        # Try to find samples from any rank
-        samples_coarse = None
-        samples_fine = None
 
         level_dir = f"{self.output_dir}/level_{level}"
 
         if level == 0:
             samples_fine = load_samples(level_dir)
             samples_coarse = [None] * len(samples_fine)
-
         else:
             samples_coarse, samples_fine = load_coupled_samples(level_dir)
 
-        return samples_coarse, samples_fine
+        return (
+            cast(List[Optional[ChainState]], samples_coarse),
+            samples_fine,
+        )
 
     def _create_level_scatter_plots(
         self,
         level: int,
-        samples_coarse: List[ChainState],
+        samples_coarse: List[Optional[ChainState]],
         samples_fine: List[ChainState],
         img_kwargs: dict,
         burnin: float = 0.0,
@@ -614,8 +721,10 @@ class MLMCPostProcessor:
             plt.close(fig_scatter)
 
         else:
-            # Comparison scatter matrix for level > 0
-            positions_coarse = get_position_from_states(samples_coarse, burnin=burnin)
+            # Comparison scatter matrix for level > 0 (samples_coarse is List[ChainState])
+            positions_coarse = get_position_from_states(
+                cast(List[ChainState], samples_coarse), burnin=burnin
+            )
 
             # Combined scatter matrix
             fig_scatter, _, _ = scatter_matrix(
@@ -632,7 +741,7 @@ class MLMCPostProcessor:
     def _create_level_trace_plots(
         self,
         level: int,
-        samples_coarse: List[ChainState],
+        samples_coarse: List[Optional[ChainState]],
         samples_fine: List[ChainState],
         img_kwargs: dict,
         burnin: float = 0.0,
@@ -650,7 +759,9 @@ class MLMCPostProcessor:
             plt.close(fig)
 
         if level > 0:
-            positions_coarse = get_position_from_states(samples_coarse, burnin=burnin)
+            positions_coarse = get_position_from_states(
+                cast(List[ChainState], samples_coarse), burnin=burnin
+            )
             fig, _ = plot_trace(
                 [positions_coarse, positions_fine], img_kwargs=img_kwargs
             )
@@ -660,7 +771,7 @@ class MLMCPostProcessor:
     def _create_level_autocorr_plots(
         self,
         level: int,
-        samples_coarse: List[ChainState],
+        samples_coarse: List[Optional[ChainState]],
         samples_fine: List[ChainState],
         maxlag: int,
         img_kwargs: dict,
@@ -681,7 +792,9 @@ class MLMCPostProcessor:
             plt.close(fig)
 
         if level > 0:
-            positions_coarse = get_position_from_states(samples_coarse, burnin=burnin)
+            positions_coarse = get_position_from_states(
+                cast(List[ChainState], samples_coarse), burnin=burnin
+            )
             fig, _, _, _ = plot_lag(
                 [positions_coarse, positions_fine], maxlag=maxlag, img_kwargs=img_kwargs
             )
@@ -691,7 +804,7 @@ class MLMCPostProcessor:
     def _create_level_joint_plots(
         self,
         level: int,
-        samples_coarse: List[ChainState],
+        samples_coarse: List[Optional[ChainState]],
         samples_fine: List[ChainState],
         img_kwargs: dict,
         burnin: float = 0.0,
@@ -703,8 +816,10 @@ class MLMCPostProcessor:
         if level == 0:
             return  # No joint plots for level 0
 
-        # Extract positions
-        positions_coarse = get_position_from_states(samples_coarse, burnin=burnin)
+        # Extract positions (samples_coarse is List[ChainState] when level > 0)
+        positions_coarse = get_position_from_states(
+            cast(List[ChainState], samples_coarse), burnin=burnin
+        )
         positions_fine = get_position_from_states(samples_fine, burnin=burnin)
 
         # Create joint plots
@@ -722,11 +837,11 @@ class MLMCPostProcessor:
 
 # Utility function for easy setup (unchanged)
 def create_mlmc_levels(
-    models: List[Tuple[ModelProtocol, ModelProtocol]],
-    proposals: List[Tuple[ProposalBase, ProposalBase]],
-    kernels: List[KernelProtocol],
-    samples_per_level: List[int],
-    initial_positions: List[Tuple[np.ndarray, np.ndarray]],
+    models: Sequence[Tuple[Optional[ModelProtocol], ModelProtocol]],
+    proposals: Sequence[Tuple[Optional[Proposal], Proposal]],
+    kernels: Sequence[LevelKernel],
+    samples_per_level: Sequence[int],
+    initial_positions: Sequence[Tuple[Optional[np.ndarray], np.ndarray]],
 ) -> List[MLMCLevel]:
     """Utility function to create MLMC levels from lists of components."""
     if not (
@@ -768,51 +883,56 @@ def create_mlmc_levels(
 if __name__ == "__main__":
     from samosa.utils.tools import lognormpdf
 
-    def gaussian_model(x: np.ndarray, level: int) -> dict[str, any]:
-        """
-        Banana model function
-        """
+    def gaussian_model(x: np.ndarray, level: int) -> dict:
+        """Gaussian model for MLMC levels."""
         output = {}
-        # Just use the log_banana function to compute the log posterior
         log_posterior = lognormpdf(
             x,
             mean=np.array([[2 ** (-level + 2)], [3 ** (-level + 2)]]),
             cov=np.array([[2, 2 ** (-level)], [2 ** (-level), 1]]),
         )
-
         output["log_posterior"] = log_posterior
-
-        # If you want to compute the qoi, cost_model_output etc. you can do it like this
-        cost = 1
-        qoi = x[0]
-
-        output["cost"] = cost
-        output["qoi"] = qoi
-
+        output["cost"] = 1
+        output["qoi"] = x[0]
         return output
 
     from samosa.proposals.gaussianproposal import GaussianRandomWalk
     from samosa.proposals.adapters import GlobalAdapter
+    from samosa.proposals.coupled_proposals import SynceCoupling
     from samosa.core.proposal import AdaptiveProposal
-    from samosa.kernels.synce import SYNCEKernel
+    from samosa.core.kernel import CoupledKernelBase
     from samosa.kernels.metropolis import MetropolisHastingsKernel
 
     L = 3
-    models_list = [lambda x, level=i: gaussian_model(x, level) for i in range(L)]
+    models_list = [
+        (lambda params, lev=i: gaussian_model(params, lev)) for i in range(L)
+    ]
     models = [(None, models_list[0])] + [
         (models_list[i], models_list[i + 1]) for i in range(L - 1)
     ]
-    proposal = GaussianRandomWalk(mu=np.zeros((2, 1)), sigma=3 * np.eye(2))
-    adapter = GlobalAdapter(ar=0.44, adapt_end=10000)
+    proposal = GaussianRandomWalk(mu=np.zeros((2, 1)), cov=3 * np.eye(2))
+    adapter = GlobalAdapter(target_ar=0.44, adapt_end=10000)
     adaptive_proposal = AdaptiveProposal(base_proposal=proposal, adapter=adapter)
     proposals = [(None, adaptive_proposal)] + [
         (adaptive_proposal, adaptive_proposal) for _ in range(L - 1)
     ]
+
+    def _make_kernel(
+        coarse: Optional[ModelProtocol],
+        fine: ModelProtocol,
+        coarse_proposal: Optional[Proposal],
+        fine_proposal: Proposal,
+    ) -> LevelKernel:
+        if coarse is None or coarse_proposal is None:
+            return MetropolisHastingsKernel(model=fine, proposal=fine_proposal)
+        return CoupledKernelBase(
+            coarse_model=coarse,
+            fine_model=fine,
+            coupled_proposal=SynceCoupling(coarse_proposal, fine_proposal),
+        )
+
     kernels = [
-        SYNCEKernel(coarse_model=coarse, fine_model=fine)
-        if coarse is not None
-        else MetropolisHastingsKernel(model=fine)
-        for coarse, fine in models
+        _make_kernel(c, f, cp, fp) for (c, f), (cp, fp) in zip(models, proposals)
     ]
     samples_per_level = [500000, 50000, 10000]
     initial_positions = [(None, np.array([[0.0], [0.0]]))] + [
@@ -820,11 +940,11 @@ if __name__ == "__main__":
     ]
 
     levels = create_mlmc_levels(
-        models=models,
-        proposals=proposals,
+        models=cast(Any, models),
+        proposals=cast(Any, proposals),
         kernels=kernels,
         samples_per_level=samples_per_level,
-        initial_positions=initial_positions,
+        initial_positions=cast(Any, initial_positions),
     )
 
     mlmc = MLMCSampler(

@@ -1,5 +1,13 @@
-{
-    "cSpell.words": [
-        "subchain"
-    ]
-}
+{"cSpell.words":[
+        "atleast",
+        "BFGS",
+        "burnin",
+        "delayedrejection",
+        "gaussianproposal",
+        "Haario",
+        "lognormpdf",
+        "logpdf",
+        "optmethod",
+        "subchain",
+        "tmap"
+    ]}

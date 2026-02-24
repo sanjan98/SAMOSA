@@ -8,6 +8,8 @@ MCMC where you need to couple coarse and fine chains.
 """
 
 # Imports
+import warnings
+
 import numpy as np
 from scipy.linalg import sqrtm
 
@@ -144,7 +146,9 @@ class LinearOptimalTransportMap(TransportMap):
 
         # Compute empirical statistics for fine distribution
         self.mu_fine = np.mean(positions_fine, axis=1, keepdims=True)
-        self.cov_fine = np.cov(positions_fine) + self.eps * np.eye(self.dim)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            self.cov_fine = np.cov(positions_fine) + self.eps * np.eye(self.dim)
 
         # Compute empirical statistics for coarse/reference distribution
         if self.reference_model is None:
@@ -154,7 +158,9 @@ class LinearOptimalTransportMap(TransportMap):
         else:
             # Use empirical statistics from coarse samples
             self.mu_coarse = np.mean(positions_coarse, axis=1, keepdims=True)
-            self.cov_coarse = np.cov(positions_coarse) + self.eps * np.eye(self.dim)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                self.cov_coarse = np.cov(positions_coarse) + self.eps * np.eye(self.dim)
 
         # Compute the optimal linear transport map (Fine -> Coarse)
         # Using the closed-form solution for linear optimal transport between Gaussians:
