@@ -29,25 +29,30 @@ class ModelProtocol(Protocol):
     **Optional keys** (custom metadata):
         'model_output', 'cost', 'qoi', 'gradient', etc.
 
+    **Signature:** The callable must accept at least ``params`` as the first
+    argument. It may accept additional keyword arguments with defaults;
+    the framework always calls ``model(params)`` with a single argument, so
+    any extra kwargs (e.g. data, qoi) will take their default values when
+    used inside the sampler. Use them for internal logic or other
+    computations (e.g. qoi) as needed.
+
     Examples:
         Function::
 
             def my_model(params: np.ndarray) -> dict:
                 return {"log_posterior": -0.5 * np.sum(params ** 2)}
 
+        With optional kwargs (for your own use; framework calls model(params) only)::
+
+            def banana_model(params: np.ndarray, data=None, qoi=None) -> dict:
+                lp = ...
+                return {"log_posterior": lp, "qoi": qoi or np.sum(params)}
+
         Class::
 
             class MyModel:
                 def __call__(self, params: np.ndarray) -> dict:
                     return {"log_posterior": -0.5 * np.sum(params ** 2)}
-
-        Component-based::
-
-            def my_model(params: np.ndarray) -> dict:
-                return {
-                    "log_prior": -0.5 * np.sum(params ** 2),
-                    "log_likelihood": -np.sum((params - 1.0) ** 2),
-                }
     """
 
     def __call__(self, params: np.ndarray) -> Dict[str, Any]:
@@ -55,7 +60,7 @@ class ModelProtocol(Protocol):
         Evaluate model at given parameters.
 
         Args:
-            params: Parameter vector of shape (d, 1).
+            params: Parameter vector of shape (d, 1). Required.
 
         Returns:
             Dictionary with posterior specification:

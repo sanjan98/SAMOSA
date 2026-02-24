@@ -50,7 +50,14 @@ class SingleChainSampler:
     save_iteration : int, optional
         Save checkpoint every N iterations.
     restart : list of ChainState, optional
-        States to restart from (uses last as initial state).
+        States to restart from (uses last as initial state). Iteration and
+        adaptation (e.g. Haario mean/covariance) continue from the last
+        state's metadata: start_iteration = last.metadata["iteration"] + 1.
+        If you pass a subset (e.g. last 2000 of 10000), keep the original
+        iteration and metadata on the last state so adaptation continues
+        correctly. Do not reset iteration to 1..len(restart) unless you
+        also recompute mean/covariance from the subset and set them in
+        the last state's metadata.
     """
 
     def __init__(
@@ -119,11 +126,6 @@ class SingleChainSampler:
             Acceptance rate over the run. None if no iterations run.
         """
         os.makedirs(output_dir, exist_ok=True)
-        os.makedirs(f"{output_dir}/samples", exist_ok=True)
-        save_map = getattr(self.kernel.proposal, "save_map", None)
-        if save_map is not None:
-            os.makedirs(f"{output_dir}/maps", exist_ok=True)
-
         current_state = self.initial_state
         if self.restart is not None:
             samples = copy.deepcopy(self.restart)
@@ -202,6 +204,7 @@ class SingleChainSampler:
         if final_checkpoint:
             path = f"{output_dir}/samples.pkl"
         else:
+            os.makedirs(f"{output_dir}/samples", exist_ok=True)
             path = f"{output_dir}/samples/samples_{iteration}.pkl"
         with open(path, "wb") as f:
             pickle.dump(samples, f)
@@ -209,7 +212,11 @@ class SingleChainSampler:
         save_map = getattr(self.kernel.proposal, "save_map", None)
         if save_map is not None:
             # Proposal.save_map(output_dir, iteration) builds path as output_dir/map_{iteration}
-            map_dir = output_dir if final_checkpoint else f"{output_dir}/maps"
+            if final_checkpoint:
+                map_dir = output_dir
+            else:
+                os.makedirs(f"{output_dir}/maps", exist_ok=True)
+                map_dir = f"{output_dir}/maps"
             try:
                 save_map(map_dir, iteration)
                 logger.debug("Map checkpoint saved: iteration=%s", iteration)
