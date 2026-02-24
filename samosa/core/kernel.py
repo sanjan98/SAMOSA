@@ -167,3 +167,6 @@ class CoupledKernelBase(ABC):
         self.coupled_proposal.adapt_pair(
             current_coarse, current_fine, samples=samples, force_adapt=force_adapt
         )
+
+
+CoupledKernel = CoupledKernelBase

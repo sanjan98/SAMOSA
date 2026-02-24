@@ -33,7 +33,7 @@ _DEFAULT_IMG_KWARGS = {
     "label_fontsize": 24,
     "title_fontsize": 20,
     "tick_fontsize": 20,
-    "legend_fontsize": 16,
+    "legend_fontsize": 20,
     "img_format": "pdf",
 }
 

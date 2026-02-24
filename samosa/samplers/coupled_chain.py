@@ -12,15 +12,19 @@ import copy
 import logging
 import os
 import pickle
+from dataclasses import replace
 from typing import List, Optional
 
 import numpy as np
 
 from samosa.core.state import ChainState
 from samosa.core.kernel import CoupledKernelBase
-from samosa.core.proposal import Proposal
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,  # or DEBUG
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 
 
 class CoupledChainSampler:
@@ -28,19 +32,14 @@ class CoupledChainSampler:
     Coupled-chain MCMC sampler.
 
     Runs two chains (coarse and fine) using a CoupledKernelBase kernel. The
-    kernel owns the coupled proposal; the sampler drives the loop and manages
-    state, metadata, and I/O. proposal_coarse and proposal_fine are used only
-    for initial state metadata (e.g. covariance); kernel uses its
-    coupled_proposal for propose/acceptance_ratio/adapt.
+    kernel owns the coupled proposal; the sampler uses it for propose,
+    acceptance_ratio, adapt, and for initial state metadata (e.g. covariance)
+    and optional map checkpointing.
 
     Attributes
     ----------
     kernel : CoupledKernelBase
         The coupled transition kernel (holds coarse_model, fine_model, coupled_proposal).
-    proposal_coarse : Proposal
-        Coarse proposal (for initial state metadata).
-    proposal_fine : Proposal
-        Fine proposal (for initial state metadata).
     initial_state_coarse : ChainState
         Initial coarse state.
     initial_state_fine : ChainState
@@ -56,8 +55,6 @@ class CoupledChainSampler:
     def __init__(
         self,
         kernel: CoupledKernelBase,
-        proposal_coarse: Proposal,
-        proposal_fine: Proposal,
         initial_position_coarse: np.ndarray,
         initial_position_fine: np.ndarray,
         n_iterations: int,
@@ -73,8 +70,7 @@ class CoupledChainSampler:
         self.dim = dim
 
         self.kernel = kernel
-        self.proposal_coarse = proposal_coarse
-        self.proposal_fine = proposal_fine
+        cp = kernel.coupled_proposal
         self.coarse_model = kernel.coarse_model
         self.fine_model = kernel.fine_model
         self.restart_coarse = restart_coarse
@@ -87,15 +83,28 @@ class CoupledChainSampler:
                 )
 
         if self.restart_coarse is not None:
-            self.initial_state_coarse = self.restart_coarse[-1]
-            meta = self.restart_coarse[-1].metadata or {}
+            initial_coarse = self.restart_coarse[-1]
+            tmap_coarse = getattr(cp.proposal_coarse, "map", None)
+            if tmap_coarse is not None and initial_coarse.reference_position is None:
+                ref_pos, _ = tmap_coarse.forward(initial_coarse.position)
+                self.initial_state_coarse = replace(
+                    initial_coarse, reference_position=ref_pos
+                )
+            else:
+                self.initial_state_coarse = initial_coarse
+            meta = self.initial_state_coarse.metadata or {}
             self.start_iteration = meta.get("iteration", 0) + 1
         else:
+            ref_pos_coarse: Optional[np.ndarray] = None
+            tmap_coarse = getattr(cp.proposal_coarse, "map", None)
+            if tmap_coarse is not None:
+                ref_pos_coarse, _ = tmap_coarse.forward(initial_position_coarse)
             self.initial_state_coarse = ChainState(
                 position=initial_position_coarse,
+                reference_position=ref_pos_coarse,
                 **self.coarse_model(initial_position_coarse),
                 metadata={
-                    "covariance": self.proposal_coarse.cov.copy(),
+                    "covariance": cp.proposal_coarse.cov.copy(),
                     "mean": initial_position_coarse,
                     "lambda": 2.38**2 / self.dim,
                     "acceptance_probability": 0.0,
@@ -106,15 +115,28 @@ class CoupledChainSampler:
             self.start_iteration = 1
 
         if self.restart_fine is not None:
-            self.initial_state_fine = self.restart_fine[-1]
-            meta = self.restart_fine[-1].metadata or {}
+            initial_fine = self.restart_fine[-1]
+            tmap_fine = getattr(cp.proposal_fine, "map", None)
+            if tmap_fine is not None and initial_fine.reference_position is None:
+                ref_pos, _ = tmap_fine.forward(initial_fine.position)
+                self.initial_state_fine = replace(
+                    initial_fine, reference_position=ref_pos
+                )
+            else:
+                self.initial_state_fine = initial_fine
+            meta = self.initial_state_fine.metadata or {}
             self.start_iteration = meta.get("iteration", 0) + 1
         else:
+            ref_pos_fine: Optional[np.ndarray] = None
+            tmap_fine = getattr(cp.proposal_fine, "map", None)
+            if tmap_fine is not None:
+                ref_pos_fine, _ = tmap_fine.forward(initial_position_fine)
             self.initial_state_fine = ChainState(
                 position=initial_position_fine,
+                reference_position=ref_pos_fine,
                 **self.fine_model(initial_position_fine),
                 metadata={
-                    "covariance": self.proposal_fine.cov.copy(),
+                    "covariance": cp.proposal_fine.cov.copy(),
                     "mean": initial_position_fine,
                     "lambda": 2.38**2 / self.dim,
                     "acceptance_probability": 0.0,
@@ -127,7 +149,17 @@ class CoupledChainSampler:
         self.print_iteration = print_iteration
         self.save_iterations = save_iteration
 
-    def run(self, output_dir: str) -> Optional[tuple[float, float]]:
+    @property
+    def proposal_coarse(self):
+        """Coarse proposal from the kernel's coupled proposal (for backward compatibility)."""
+        return self.kernel.coupled_proposal.proposal_coarse
+
+    @property
+    def proposal_fine(self):
+        """Fine proposal from the kernel's coupled proposal (for backward compatibility)."""
+        return self.kernel.coupled_proposal.proposal_fine
+
+    def run(self, output_dir: str) -> tuple[float, float]:
         """
         Run the coupled MCMC sampler for a specified number of iterations.
 
@@ -138,8 +170,8 @@ class CoupledChainSampler:
 
         Returns
         -------
-        tuple of (float, float), optional
-            (acceptance_rate_coarse, acceptance_rate_fine). None if no iterations run.
+        tuple of (float, float)
+            (acceptance_rate_coarse, acceptance_rate_fine).
         """
         os.makedirs(output_dir, exist_ok=True)
 
@@ -256,12 +288,11 @@ class CoupledChainSampler:
         Intermediate checkpoints go to output_dir/samples/ and output_dir/maps/;
         final checkpoint writes samples to output_dir root.
         """
-        os.makedirs(f"{output_dir}/samples", exist_ok=True)
-        os.makedirs(f"{output_dir}/maps", exist_ok=True)
         if final_checkpoint:
             path_c = os.path.join(output_dir, "samples_coarse.pkl")
             path_f = os.path.join(output_dir, "samples_fine.pkl")
         else:
+            os.makedirs(f"{output_dir}/samples", exist_ok=True)
             path_c = os.path.join(
                 output_dir, "samples", f"samples_coarse_{iteration}.pkl"
             )
@@ -276,12 +307,12 @@ class CoupledChainSampler:
             "Checkpoint saved: iteration=%s, paths=%s, %s", iteration, path_c, path_f
         )
 
-        save_map_coarse = getattr(self.proposal_coarse, "save_map", None)
-        save_map_fine = getattr(self.proposal_fine, "save_map", None)
+        cp = self.kernel.coupled_proposal
+        save_map_coarse = getattr(cp.proposal_coarse, "save_map", None)
+        save_map_fine = getattr(cp.proposal_fine, "save_map", None)
         if save_map_coarse is not None:
-            map_dir_coarse = (
-                output_dir if final_checkpoint else f"{output_dir}/maps/map_coarse"
-            )
+            map_dir_coarse = os.path.join(output_dir, "maps", "map_coarse")
+            os.makedirs(map_dir_coarse, exist_ok=True)
             try:
                 save_map_coarse(map_dir_coarse, iteration)
                 logger.debug("Coarse map checkpoint saved: iteration=%s", iteration)
@@ -290,9 +321,8 @@ class CoupledChainSampler:
                     "Coarse map checkpoint failed at iteration %s: %s", iteration, e
                 )
         if save_map_fine is not None:
-            map_dir_fine = (
-                output_dir if final_checkpoint else f"{output_dir}/maps/map_fine"
-            )
+            map_dir_fine = os.path.join(output_dir, "maps", "map_fine")
+            os.makedirs(map_dir_fine, exist_ok=True)
             try:
                 save_map_fine(map_dir_fine, iteration)
                 logger.debug("Fine map checkpoint saved: iteration=%s", iteration)

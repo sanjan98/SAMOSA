@@ -4,6 +4,7 @@
         "burnin",
         "delayedrejection",
         "gaussianproposal",
+        "Gaussians",
         "Haario",
         "lognormpdf",
         "logpdf",

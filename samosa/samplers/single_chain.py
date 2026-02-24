@@ -215,8 +215,8 @@ class SingleChainSampler:
             if final_checkpoint:
                 map_dir = output_dir
             else:
-                os.makedirs(f"{output_dir}/maps", exist_ok=True)
-                map_dir = f"{output_dir}/maps"
+                map_dir = os.path.join(output_dir, "maps")
+                os.makedirs(map_dir, exist_ok=True)
             try:
                 save_map(map_dir, iteration)
                 logger.debug("Map checkpoint saved: iteration=%s", iteration)

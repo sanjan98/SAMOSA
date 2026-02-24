@@ -11,9 +11,9 @@ from samosa.utils.tools import (
     sample_multivariate_gaussian,
     laplace_approx,
     log_banana,
-    nearest_positive_definite,
-    is_positive_definite,
-    batched_variance,
+    _nearest_positive_definite,
+    _is_positive_definite,
+    _batched_variance,
 )
 
 
@@ -199,23 +199,23 @@ class TestLogBanana:
 
 class TestPositiveDefinite:
     def test_is_positive_definite(self):
-        """Test is_positive_definite function."""
+        """Test _is_positive_definite function."""
         # Test with positive definite matrix
         matrix_pd = np.array([[2.0, 0.5], [0.5, 2.0]])
-        assert is_positive_definite(matrix_pd) == True
+        assert _is_positive_definite(matrix_pd) == True
 
         # Test with non-positive definite matrix
         matrix_non_pd = np.array([[1.0, 2.0], [2.0, 1.0]])
-        assert is_positive_definite(matrix_non_pd) == False
+        assert _is_positive_definite(matrix_non_pd) == False
 
     def test_nearest_positive_definite(self):
-        """Test nearest_positive_definite function."""
+        """Test _nearest_positive_definite function."""
         # Test with a matrix that's not positive definite
         matrix = np.array([[1.0, 2.0], [2.0, 1.0]])
-        result = nearest_positive_definite(matrix)
+        result = _nearest_positive_definite(matrix)
 
         # The result should be positive definite
-        assert is_positive_definite(result) == True
+        assert _is_positive_definite(result) == True
 
         # The result should be close to the original matrix
         assert np.linalg.norm(result - matrix) < 2.0
@@ -227,7 +227,7 @@ class TestBatchedVariance:
         data = np.array([[1.0, 2.0, 3.0, 4.0, 5.0]])  # 1 dimension, 5 samples
         batch_size = 2
 
-        result = batched_variance(data, batch_size)
+        result = _batched_variance(data, batch_size)
         expected = np.var(data, axis=1, ddof=1)
 
         assert result.shape == (1,)
@@ -240,7 +240,7 @@ class TestBatchedVariance:
         data = np.random.randn(3, 1000)
         batch_size = 100
 
-        result = batched_variance(data, batch_size)
+        result = _batched_variance(data, batch_size)
         expected = np.var(data, axis=1, ddof=1)
 
         assert result.shape == (3,)
@@ -251,9 +251,9 @@ class TestBatchedVariance:
         np.random.seed(42)
         data = np.random.randn(2, 500)
 
-        result1 = batched_variance(data, 50)
-        result2 = batched_variance(data, 100)
-        result3 = batched_variance(data, 250)
+        result1 = _batched_variance(data, 50)
+        result2 = _batched_variance(data, 100)
+        result3 = _batched_variance(data, 250)
         expected = np.var(data, axis=1, ddof=1)
 
         assert np.allclose(result1, expected)
@@ -264,14 +264,14 @@ class TestBatchedVariance:
         """Test edge cases for batched variance."""
         # Test with batch size larger than dataset
         data = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-        result = batched_variance(data, 10)
+        result = _batched_variance(data, 10)
         expected = np.var(data, axis=1, ddof=1)
         assert np.allclose(result, expected)
 
         # Test with batch size equal to dataset size
-        result = batched_variance(data, 3)
+        result = _batched_variance(data, 3)
         assert np.allclose(result, expected)
 
         # Test with batch size of 1
-        result = batched_variance(data, 1)
+        result = _batched_variance(data, 1)
         assert np.allclose(result, expected)

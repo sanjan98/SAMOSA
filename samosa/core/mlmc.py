@@ -50,7 +50,7 @@ from samosa.utils.post_processing import (
     plot_lag,
     joint_plots,
 )
-from samosa.utils.tools import batched_variance
+from samosa.utils.tools import _batched_variance
 
 logger = logging.getLogger(__name__)
 
@@ -292,8 +292,6 @@ class MLMCSampler:
 
             sampler = CoupledChainSampler(
                 kernel=cast(CoupledKernelBase, level.kernel),
-                proposal_coarse=cast(Proposal, level.coarse_proposal),
-                proposal_fine=level.fine_proposal,
                 initial_position_coarse=level.initial_position_coarse,
                 initial_position_fine=level.initial_position_fine,
                 n_iterations=level.n_samples,
@@ -510,7 +508,7 @@ class MLMCCalculator:
         # Stack as (d, N) for batched_variance
         differences = np.vstack(differences).T
         mean_diff = np.mean(differences, axis=1)
-        variance_diff = batched_variance(differences)
+        variance_diff = _batched_variance(differences)
 
         # Stack as (n_samples, dim)
         qoi_fine_arr = np.vstack(qoi_fine_list)

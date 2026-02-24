@@ -7,7 +7,7 @@ from typing import Optional, Tuple
 from dataclasses import replace
 from samosa.core.proposal import Proposal, CoupledProposal
 from samosa.core.state import ChainState
-from samosa.proposals.gaussianproposal import GaussianRandomWalk, IndependentProposal
+from samosa.proposals.gaussianproposal import IndependentProposal
 from samosa.utils.tools import sample_multivariate_gaussian
 
 
@@ -23,23 +23,6 @@ def _unwrap_base_proposal(proposal: Proposal) -> Proposal:
     return base
 
 
-def _uses_transport(proposal: Optional[Proposal]) -> bool:
-    """
-    Return True if proposal stack contains a transport-aware wrapper.
-
-    Transport wrappers expose a `.map` attribute.
-    """
-    current = proposal
-    while current is not None:
-        if hasattr(current, "map"):
-            return True
-        if hasattr(current, "proposal"):
-            current = getattr(current, "proposal")
-        else:
-            break
-    return False
-
-
 def _state_for_proposal(proposal: Proposal, state: ChainState) -> ChainState:
     """
     Build a state representation compatible with proposal_logpdf.
@@ -52,16 +35,45 @@ def _state_for_proposal(proposal: Proposal, state: ChainState) -> ChainState:
     return state
 
 
-class SynceCoupling(CoupledProposal):
+def _extract_mu_cov(base_proposal: Proposal) -> tuple[np.ndarray, np.ndarray]:
     """
-    A common random number coupling. Simple, effective and fast to compute.
-    Muchandimath, Sanjan, and Alex Gorodetsky.
-    "Synchronized step Multilevel Markov chain Monte Carlo."
-    arXiv preprint arXiv:2501.16538 (2025).
-    """
+    Extract Gaussian parameters from a base proposal.
 
-    def __init__(self, proposal_coarse: Proposal, proposal_fine: Proposal) -> None:
+    IndependentCoupling's common sampler only needs `mu` and `cov`, so allow any
+    proposal exposing these attributes (not just specific proposal subclasses).
+    """
+    if not hasattr(base_proposal, "mu") or not hasattr(base_proposal, "cov"):
+        raise ValueError(
+            "IndependentCoupling requires base proposals with `mu` and `cov` "
+            "attributes to build a common independent sampler."
+        )
+    mu = np.asarray(getattr(base_proposal, "mu"))
+    cov = np.asarray(getattr(base_proposal, "cov"))
+    if cov.ndim != 2 or cov.shape[0] != cov.shape[1]:
+        raise ValueError("Base proposal covariance `cov` must be square.")
+    if mu.shape[0] != cov.shape[0]:
+        raise ValueError(
+            "Base proposal mean/covariance shape mismatch while building common sampler."
+        )
+    return mu, cov
+
+
+class SynceCoupling(CoupledProposal):
+    def __init__(
+        self, proposal_coarse: Proposal, proposal_fine: Proposal, omega: float = 0.0
+    ) -> None:
+        """
+        A common random number coupling. Simple, effective and fast to compute.
+        Muchandimath, Sanjan, and Alex Gorodetsky.
+        "Synchronized step Multilevel Markov chain Monte Carlo."
+        arXiv preprint arXiv:2501.16538 (2025).
+        """
         super().__init__(proposal_coarse, proposal_fine)
+        if not (0.0 <= omega <= 1.0):
+            raise ValueError("omega must be in [0, 1].")
+        self.omega = float(omega)
+        self._last_mode = "synce"
+        self.common_sampler: Optional[IndependentProposal] = None
         coarse_base = _unwrap_base_proposal(proposal_coarse)
         fine_base = _unwrap_base_proposal(proposal_fine)
         if isinstance(coarse_base, IndependentProposal) or isinstance(
@@ -71,6 +83,8 @@ class SynceCoupling(CoupledProposal):
                 "SynceCoupling requires state-dependent base proposals. "
                 "IndependentProposal is not allowed."
             )
+        # Lazily constructed only if omega-branch is used.
+        self._independent_coupling: Optional[IndependentCoupling] = None
 
     def sample_pair(
         self, coarse_state: ChainState, fine_state: ChainState
@@ -81,59 +95,115 @@ class SynceCoupling(CoupledProposal):
             "The dimensions of the two chains must be the same."
         )
 
-        eta = sample_multivariate_gaussian(np.zeros((dim, 1)), np.eye(dim))
-        proposed_coarse = self.proposal_coarse.sample(coarse_state, eta)
-        proposed_fine = self.proposal_fine.sample(fine_state, eta)
+        # With probability omega, do an independent "resync" move.
+        if np.random.rand() < self.omega:
+            self._last_mode = "independent"
+            if self._independent_coupling is None:
+                self._independent_coupling = IndependentCoupling(
+                    self.proposal_coarse, self.proposal_fine
+                )
+            proposed_coarse, proposed_fine = self._independent_coupling.sample_pair(
+                coarse_state, fine_state
+            )
+            # Expose the current common sampler for diagnostics/backward compatibility.
+            self.common_sampler = self._independent_coupling.common_sampler
+        else:
+            self._last_mode = "synce"
+            eta = sample_multivariate_gaussian(np.zeros((dim, 1)), np.eye(dim))
+            proposed_coarse = self.proposal_coarse.sample(coarse_state, eta)
+            proposed_fine = self.proposal_fine.sample(fine_state, eta)
 
         return proposed_coarse, proposed_fine
+
+    def proposal_logpdf_pair(
+        self,
+        current_coarse: ChainState,
+        proposed_coarse: ChainState,
+        current_fine: ChainState,
+        proposed_fine: ChainState,
+    ) -> tuple[tuple[float, float], tuple[float, float]]:
+        if self._last_mode == "independent":
+            if self._independent_coupling is None:
+                raise RuntimeError(
+                    "SynceCoupling independent branch used before initialization."
+                )
+            return self._independent_coupling.proposal_logpdf_pair(
+                current_coarse, proposed_coarse, current_fine, proposed_fine
+            )
+        return super().proposal_logpdf_pair(
+            current_coarse, proposed_coarse, current_fine, proposed_fine
+        )
 
 
 class IndependentCoupling(CoupledProposal):
-    """
-    Independent coupling. Propose a common sample from an independent sampler
-    Madrigal-Cianci, Juan P., Fabio Nobile, and Raul Tempone.
-    "Analysis of a class of multilevel Markov chain Monte Carlo algorithms
-    based on independent Metropolis-Hastings."
-    SIAM/ASA Journal on Uncertainty Quantification 11, no. 1 (2023): 91-138.
-    """
+    def __init__(self, proposal_coarse: Proposal, proposal_fine: Proposal) -> None:
+        """
+        Independent coupling. Propose a common sample from an independent sampler
+        Madrigal-Cianci, Juan P., Fabio Nobile, and Raul Tempone.
+        "Analysis of a class of multilevel Markov chain Monte Carlo algorithms
+        based on independent Metropolis-Hastings."
+        SIAM/ASA Journal on Uncertainty Quantification 11, no. 1 (2023): 91-138.
 
-    def __init__(
-        self,
-        proposal_coarse: Proposal,
-        proposal_fine: Proposal,
-        common_sampler: Optional[Proposal] = None,
-    ) -> None:
+        A common independent sampler is constructed from the current coarse/fine
+        proposal parameters and refreshed in `sample_pair` so adaptation is reflected.
+        Both chains then use the same shared reference sample.
+        """
         super().__init__(proposal_coarse, proposal_fine)
-        coarse_base = _unwrap_base_proposal(proposal_coarse)
-        fine_base = _unwrap_base_proposal(proposal_fine)
-        if isinstance(coarse_base, GaussianRandomWalk) or isinstance(
-            fine_base, GaussianRandomWalk
-        ):
-            raise ValueError(
-                "IndendentCoupling does not allow GaussianRandomWalk as base proposal."
+        self.common_sampler = self._build_common_sampler_from_proposals()
+
+    def _build_common_sampler_from_proposals(self) -> IndependentProposal:
+        """
+        Build common independent proposal from coarse/fine base proposals.
+
+        Accepts GaussianRandomWalk or IndependentProposal bases (including wrappers).
+        """
+        coarse_base = _unwrap_base_proposal(self.proposal_coarse)
+        fine_base = _unwrap_base_proposal(self.proposal_fine)
+        coarse_mu, coarse_cov = _extract_mu_cov(coarse_base)
+        fine_mu, fine_cov = _extract_mu_cov(fine_base)
+        common_mean = 0.5 * (coarse_mu + fine_mu)
+        common_cov = 0.5 * (coarse_cov + fine_cov)
+        return IndependentProposal(mu=common_mean, cov=common_cov)
+
+    def _state_from_common_reference(
+        self, source_proposal: Proposal, reference_position: np.ndarray
+    ) -> ChainState:
+        """Map shared reference sample to proposal target-space state."""
+        if hasattr(source_proposal, "map"):
+            position, _ = getattr(source_proposal, "map").inverse(reference_position)
+            return ChainState(
+                position=position,
+                reference_position=np.array(reference_position, copy=True),
             )
-        self.common_sampler = common_sampler
-        common_sampler_base = (
-            _unwrap_base_proposal(common_sampler)
-            if common_sampler is not None
-            else None
-        )
-        if common_sampler_base is not None and not isinstance(
-            common_sampler_base, IndependentProposal
-        ):
-            raise ValueError("common_sampler must be an IndependentProposal or None.")
-        uses_transport = _uses_transport(proposal_coarse) or _uses_transport(
-            proposal_fine
-        )
-        if (
-            uses_transport
-            and common_sampler is not None
-            and _uses_transport(common_sampler)
-        ):
-            raise ValueError(
-                "For transport proposals, common_sampler must be in reference "
-                "space (use IndependentProposal, not TransportProposal)."
+        return ChainState(position=np.array(reference_position, copy=True))
+
+    def _proposal_logpdf_from_common_sampler(
+        self,
+        current: ChainState,
+        proposed: ChainState,
+        proposal: Proposal,
+    ) -> tuple[float, float]:
+        """Compute induced marginal logpdf under the common sampler."""
+        if hasattr(proposal, "map"):
+            map_obj = getattr(proposal, "map")
+            current_ref = current.reference_position
+            proposed_ref = proposed.reference_position
+            if current_ref is None:
+                current_ref, _ = map_obj.forward(current.position)
+            if proposed_ref is None:
+                proposed_ref, _ = map_obj.forward(proposed.position)
+
+            logq_forward_ref, logq_reverse_ref = self.common_sampler.proposal_logpdf(
+                ChainState(position=current_ref, metadata=current.metadata),
+                ChainState(position=proposed_ref, metadata=proposed.metadata),
             )
+            _, log_det_forward_current = map_obj.forward(current.position)
+            _, log_det_forward_proposed = map_obj.forward(proposed.position)
+            return (
+                logq_forward_ref - log_det_forward_current,
+                logq_reverse_ref - log_det_forward_proposed,
+            )
+        return self.common_sampler.proposal_logpdf(current, proposed)
 
     def sample_pair(
         self, coarse_state: ChainState, fine_state: ChainState
@@ -144,29 +214,48 @@ class IndependentCoupling(CoupledProposal):
             "The dimensions of the two chains must be the same."
         )
 
-        if self.common_sampler is None:
-            assert (
-                coarse_state.metadata is not None and fine_state.metadata is not None
-            ), "Metadata must be available to compute common sampler."
-            common_mean = (
-                coarse_state.metadata["mean"] + fine_state.metadata["mean"]
-            ) / 2
-            common_cov = (
-                coarse_state.metadata["covariance"] + fine_state.metadata["covariance"]
-            ) / 2
-            self.common_sampler = IndependentProposal(mu=common_mean, cov=common_cov)
-
-        eta = self.common_sampler.sample(coarse_state).position
-        proposed_coarse = self.proposal_coarse.sample(coarse_state, eta)
-        proposed_fine = self.proposal_fine.sample(fine_state, eta)
+        # Refresh from proposals so adaptation propagates to common sampler.
+        self.common_sampler = self._build_common_sampler_from_proposals()
+        common_reference = self.common_sampler.sample(coarse_state).position
+        proposed_coarse = self._state_from_common_reference(
+            self.proposal_coarse, common_reference
+        )
+        proposed_fine = self._state_from_common_reference(
+            self.proposal_fine, common_reference
+        )
 
         return proposed_coarse, proposed_fine
 
+    def proposal_logpdf_pair(
+        self,
+        current_coarse: ChainState,
+        proposed_coarse: ChainState,
+        current_fine: ChainState,
+        proposed_fine: ChainState,
+    ) -> tuple[tuple[float, float], tuple[float, float]]:
+        """Use common sampler induced marginals for both chains."""
+        coarse_logq_forward, coarse_logq_reverse = (
+            self._proposal_logpdf_from_common_sampler(
+                current_coarse, proposed_coarse, self.proposal_coarse
+            )
+        )
+        fine_logq_forward, fine_logq_reverse = (
+            self._proposal_logpdf_from_common_sampler(
+                current_fine, proposed_fine, self.proposal_fine
+            )
+        )
+        return (coarse_logq_forward, coarse_logq_reverse), (
+            fine_logq_forward,
+            fine_logq_reverse,
+        )
+
 
 class MaximalCoupling(CoupledProposal):
-    """Try to force two chains to sample the same point using maximal coupling"""
-
     def __init__(self, proposal_coarse: Proposal, proposal_fine: Proposal) -> None:
+        """
+        Thorisson, Hermann. "Coupling methods in probability theory." Scandinavian journal of statistics (1995): 159-182.
+        Try to force two chains to sample the same point using maximal coupling.
+        """
         super().__init__(proposal_coarse, proposal_fine)
 
     def sample_pair(

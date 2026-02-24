@@ -4,14 +4,22 @@ Unit tests for the CoupledChainSampler (coupledMCMCsampler) class.
 
 import os
 import shutil
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple, cast
 
 import numpy as np
 import pytest
 
 from samosa.core.state import ChainState
+from samosa.core.kernel import CoupledKernelBase
+from samosa.core.map import TransportMap
 from samosa.core.model import ModelProtocol
-from samosa.core.proposal import ProposalBase
+from samosa.core.proposal import ProposalBase, TransportProposalBase
+from samosa.proposals.coupled_proposals import (
+    IndependentCoupling,
+    MaximalCoupling,
+    SynceCoupling,
+)
+from samosa.proposals.gaussianproposal import GaussianRandomWalk, IndependentProposal
 from samosa.samplers.coupled_chain import coupledMCMCsampler
 from samosa.utils.post_processing import load_coupled_samples
 
@@ -30,11 +38,12 @@ class MockModel(ModelProtocol):
         """Return a mock log posterior value."""
         # Simple quadratic function centered at self.mean
         diff = position - self.mean
-        log_posterior = -0.5 * self.scale * float(diff.T @ diff)
+        quad = (diff.T @ diff).item()
+        log_posterior = -0.5 * self.scale * quad
         return {
             "log_posterior": log_posterior,
-            "prior": -0.25 * self.scale * float(diff.T @ diff),
-            "likelihood": -0.25 * self.scale * float(diff.T @ diff),
+            "log_prior": -0.25 * self.scale * quad,
+            "log_likelihood": -0.25 * self.scale * quad,
             "cost": self.scale,
             "qoi": position * self.scale,
         }
@@ -65,12 +74,21 @@ class MockProposal(ProposalBase):
         self.adapt_called = True
 
 
+class MockCoupledProposal:
+    """Minimal coupled proposal for sampler tests (has proposal_coarse, proposal_fine)."""
+
+    def __init__(self, proposal_coarse, proposal_fine):
+        self.proposal_coarse = proposal_coarse
+        self.proposal_fine = proposal_fine
+
+
 class MockKernel:
     """Mock kernel for testing the coupled sampler (new API: propose/acceptance_ratio/adapt)."""
 
-    def __init__(self, coarse_model, fine_model):
+    def __init__(self, coarse_model, fine_model, coupled_proposal=None):
         self.coarse_model = coarse_model
         self.fine_model = fine_model
+        self.coupled_proposal = coupled_proposal
         self.propose_called = False
         self.acceptance_ratio_called = False
         self.adapt_called = False
@@ -104,7 +122,7 @@ class MockKernel:
         self.acceptance_ratio_called = True
         return 0.7, 0.8
 
-    def adapt(self, proposed_coarse, proposed_fine):
+    def adapt(self, proposed_coarse, proposed_fine, *, samples=None):
         """Record that adapt was called."""
         self.adapt_called = True
 
@@ -136,9 +154,11 @@ def fine_model():
 
 
 @pytest.fixture
-def kernel(coarse_model, fine_model):
-    """Return a mock kernel."""
-    return MockKernel(coarse_model, fine_model)
+def kernel(coarse_model, fine_model, proposal_coarse, proposal_fine):
+    """Return a mock kernel with a coupled proposal (sampler gets proposals from kernel)."""
+    k = MockKernel(coarse_model, fine_model)
+    k.coupled_proposal = MockCoupledProposal(proposal_coarse, proposal_fine)
+    return k
 
 
 @pytest.fixture
@@ -168,16 +188,12 @@ def initial_position_fine():
 @pytest.fixture
 def coupled_sampler(
     kernel,
-    proposal_coarse,
-    proposal_fine,
     initial_position_coarse,
     initial_position_fine,
 ):
-    """Return a coupled MCMC sampler instance."""
+    """Return a coupled MCMC sampler instance (proposals come from kernel.coupled_proposal)."""
     return coupledMCMCsampler(
-        kernel=kernel,
-        proposal_coarse=proposal_coarse,
-        proposal_fine=proposal_fine,
+        kernel=cast(CoupledKernelBase, kernel),
         initial_position_coarse=initial_position_coarse,
         initial_position_fine=initial_position_fine,
         n_iterations=10,
@@ -224,14 +240,13 @@ def test_coupled_sampler_init(
 
 def test_coupled_sampler_dimension_mismatch(kernel, proposal_coarse, proposal_fine):
     """Test that a ValueError is raised when dimensions don't match."""
+    kernel.coupled_proposal = MockCoupledProposal(proposal_coarse, proposal_fine)
     initial_position_coarse = np.array([[0.5], [0.5]])
     initial_position_fine = np.array([[0.2], [0.3], [0.4]])  # Different dimension
 
     with pytest.raises(ValueError):
         coupledMCMCsampler(
-            kernel=kernel,
-            proposal_coarse=proposal_coarse,
-            proposal_fine=proposal_fine,
+            kernel=cast(CoupledKernelBase, kernel),
             initial_position_coarse=initial_position_coarse,
             initial_position_fine=initial_position_fine,
             n_iterations=10,
@@ -286,15 +301,15 @@ def test_coupled_sampler_load_samples(coupled_sampler, output_dir, monkeypatch):
 
     # Check that iteration numbers are set correctly
     for i, (sample_coarse, sample_fine) in enumerate(zip(samples_coarse, samples_fine)):
-        assert sample_coarse.metadata["iteration"] == i + 1
-        assert sample_fine.metadata["iteration"] == i + 1
+        meta_c = sample_coarse.metadata or {}
+        meta_f = sample_fine.metadata or {}
+        assert meta_c.get("iteration") == i + 1
+        assert meta_f.get("iteration") == i + 1
 
 
 @pytest.mark.parametrize("n_iterations", [1, 5, 20])
 def test_coupled_sampler_different_iterations(
     kernel,
-    proposal_coarse,
-    proposal_fine,
     initial_position_coarse,
     initial_position_fine,
     output_dir,
@@ -302,9 +317,7 @@ def test_coupled_sampler_different_iterations(
 ):
     """Test the sampler with different numbers of iterations."""
     sampler = coupledMCMCsampler(
-        kernel=kernel,
-        proposal_coarse=proposal_coarse,
-        proposal_fine=proposal_fine,
+        kernel=cast(CoupledKernelBase, kernel),
         initial_position_coarse=initial_position_coarse,
         initial_position_fine=initial_position_fine,
         n_iterations=n_iterations,
@@ -329,14 +342,14 @@ def test_coupled_sampler_deep_copy(coupled_sampler, output_dir, monkeypatch):
     samples_coarse, samples_fine = load_coupled_samples(output_dir)
 
     for i in range(1, len(samples_coarse)):
-        samples_coarse[i - 1].metadata["test_key"] = "test_value"
-        assert "test_key" not in samples_coarse[i].metadata
+        prev_meta = samples_coarse[i - 1].metadata
+        if prev_meta is not None:
+            prev_meta["test_key"] = "test_value"
+        assert "test_key" not in (samples_coarse[i].metadata or {})
 
 
 def test_coupled_sampler_checkpoint_layout(
     kernel,
-    proposal_coarse,
-    proposal_fine,
     initial_position_coarse,
     initial_position_fine,
     output_dir,
@@ -345,9 +358,7 @@ def test_coupled_sampler_checkpoint_layout(
     """Test that checkpoints use output_dir/samples/ and final .pkl at root."""
     monkeypatch.setattr("numpy.random.rand", lambda: 0.5)
     sampler = coupledMCMCsampler(
-        kernel=kernel,
-        proposal_coarse=proposal_coarse,
-        proposal_fine=proposal_fine,
+        kernel=cast(CoupledKernelBase, kernel),
         initial_position_coarse=initial_position_coarse,
         initial_position_fine=initial_position_fine,
         n_iterations=6,
@@ -398,10 +409,9 @@ def test_coupled_sampler_proposed_states_have_log_posterior(
     """Test that after kernel.propose, states have log_posterior (model was evaluated)."""
     monkeypatch.setattr("numpy.random.rand", lambda: 0.5)
     kernel = MockKernel(coarse_model, fine_model)
+    kernel.coupled_proposal = MockCoupledProposal(proposal_coarse, proposal_fine)
     sampler = coupledMCMCsampler(
-        kernel=kernel,
-        proposal_coarse=proposal_coarse,
-        proposal_fine=proposal_fine,
+        kernel=cast(CoupledKernelBase, kernel),
         initial_position_coarse=initial_position_coarse,
         initial_position_fine=initial_position_fine,
         n_iterations=2,
@@ -412,3 +422,385 @@ def test_coupled_sampler_proposed_states_have_log_posterior(
         assert s.log_posterior is not None
     for s in samples_fine:
         assert s.log_posterior is not None
+
+
+# --------------------------------------------------
+# E2E with real kernel and coupled proposals
+# --------------------------------------------------
+
+
+class IdentityMap(TransportMap):
+    """Identity transport map for E2E tests (e.g. MaximalCoupling + transport)."""
+
+    def __init__(self, dim: int = 2):
+        super().__init__(dim=dim)
+
+    def forward(self, position: np.ndarray):
+        return position.copy(), 0.0
+
+    def inverse(self, reference_position: np.ndarray):
+        return reference_position.copy(), 0.0
+
+    def adapt(self, *args, **kwargs):
+        return None
+
+
+def _run_coupled_e2e(
+    coarse_model,
+    fine_model,
+    coupled_proposal,
+    initial_position_coarse: np.ndarray,
+    initial_position_fine: np.ndarray,
+    output_dir: str,
+    n_iterations: int = 30,
+    save_iteration: Optional[int] = None,
+):
+    """Build real CoupledKernelBase, run sampler, load samples. Returns (samples_c, samples_f, ar_c, ar_f)."""
+    kernel = CoupledKernelBase(
+        coarse_model=coarse_model,
+        fine_model=fine_model,
+        coupled_proposal=coupled_proposal,
+    )
+    sampler = coupledMCMCsampler(
+        kernel=kernel,
+        initial_position_coarse=initial_position_coarse,
+        initial_position_fine=initial_position_fine,
+        n_iterations=n_iterations,
+        save_iteration=save_iteration,
+    )
+    result = sampler.run(output_dir)
+    samples_coarse, samples_fine = load_coupled_samples(output_dir)
+    ar_coarse, ar_fine = result if result else (0.0, 0.0)
+    return samples_coarse, samples_fine, ar_coarse, ar_fine
+
+
+def _assert_e2e_basics(samples_coarse, samples_fine, n_iterations, ar_coarse, ar_fine):
+    """Common assertions for E2E runs."""
+    assert len(samples_coarse) == n_iterations
+    assert len(samples_fine) == n_iterations
+    for s in samples_coarse:
+        assert s.log_posterior is not None
+    for s in samples_fine:
+        assert s.log_posterior is not None
+    assert 0 <= ar_coarse <= 1.0
+    assert 0 <= ar_fine <= 1.0
+
+
+# --- Synce + posteriors ---
+
+
+def test_e2e_synce_same_gaussian_2d(gaussian_posterior_2d, output_dir):
+    """E2E: SynceCoupling + same Gaussian 2d posterior."""
+    dim = 2
+    grw_c = GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    grw_f = GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    coupling = SynceCoupling(grw_c, grw_f)
+    init_c = np.zeros((dim, 1))
+    init_f = np.zeros((dim, 1))
+    samples_c, samples_f, ar_c, ar_f = _run_coupled_e2e(
+        gaussian_posterior_2d,
+        gaussian_posterior_2d,
+        coupling,
+        init_c,
+        init_f,
+        output_dir,
+        n_iterations=30,
+    )
+    _assert_e2e_basics(samples_c, samples_f, 30, ar_c, ar_f)
+    # Weak check: samples should have spread (Gaussian centered at 0)
+    positions_c = np.hstack([s.position for s in samples_c])
+    assert np.std(positions_c) > 0
+
+
+def test_e2e_synce_different_covariances(gaussian_posterior_2d, output_dir):
+    """E2E: SynceCoupling with different GRW covariances, same Gaussian 2d."""
+    dim = 2
+    grw_c = GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=2.0 * np.eye(dim))
+    grw_f = GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=0.5 * np.eye(dim))
+    coupling = SynceCoupling(grw_c, grw_f)
+    init_c = np.array([[0.5], [0.0]])
+    init_f = np.array([[0.0], [0.5]])
+    samples_c, samples_f, ar_c, ar_f = _run_coupled_e2e(
+        gaussian_posterior_2d,
+        gaussian_posterior_2d,
+        coupling,
+        init_c,
+        init_f,
+        output_dir,
+        n_iterations=30,
+    )
+    _assert_e2e_basics(samples_c, samples_f, 30, ar_c, ar_f)
+
+
+def test_e2e_synce_banana_like(banana_like_posterior, output_dir):
+    """E2E: SynceCoupling + banana-like posterior (both chains)."""
+    dim = 2
+    grw_c = GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=0.5 * np.eye(dim))
+    grw_f = GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=0.5 * np.eye(dim))
+    coupling = SynceCoupling(grw_c, grw_f)
+    init_c = np.array([[0.0], [0.0]])
+    init_f = np.array([[0.0], [0.0]])
+    samples_c, samples_f, ar_c, ar_f = _run_coupled_e2e(
+        banana_like_posterior,
+        banana_like_posterior,
+        coupling,
+        init_c,
+        init_f,
+        output_dir,
+        n_iterations=30,
+    )
+    _assert_e2e_basics(samples_c, samples_f, 30, ar_c, ar_f)
+
+
+# --- Independent + posteriors ---
+
+
+def test_e2e_independent_same_gaussian_2d(gaussian_posterior_2d, output_dir):
+    """E2E: IndependentCoupling + same Gaussian 2d (metadata builds common_sampler)."""
+    dim = 2
+    indep_c = IndependentProposal(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    indep_f = IndependentProposal(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    coupling = IndependentCoupling(indep_c, indep_f)
+    init_c = np.zeros((dim, 1))
+    init_f = np.zeros((dim, 1))
+    samples_c, samples_f, ar_c, ar_f = _run_coupled_e2e(
+        gaussian_posterior_2d,
+        gaussian_posterior_2d,
+        coupling,
+        init_c,
+        init_f,
+        output_dir,
+        n_iterations=30,
+    )
+    _assert_e2e_basics(samples_c, samples_f, 30, ar_c, ar_f)
+
+
+def test_e2e_independent_different_means(
+    gaussian_posterior_2d, gaussian_posterior_offset, output_dir
+):
+    """E2E: IndependentCoupling + coarse vs fine different Gaussian means."""
+    dim = 2
+    indep_c = IndependentProposal(mu=np.array([[1.0], [-0.5]]), cov=np.eye(dim))
+    indep_f = IndependentProposal(mu=np.zeros((dim, 1)), cov=1.5 * np.eye(dim))
+    coupling = IndependentCoupling(indep_c, indep_f)
+    init_c = np.array([[0.5], [0.0]])
+    init_f = np.array([[0.0], [0.5]])
+    samples_c, samples_f, ar_c, ar_f = _run_coupled_e2e(
+        gaussian_posterior_offset,
+        gaussian_posterior_2d,
+        coupling,
+        init_c,
+        init_f,
+        output_dir,
+        n_iterations=30,
+    )
+    _assert_e2e_basics(samples_c, samples_f, 30, ar_c, ar_f)
+
+
+# --- Maximal + posteriors ---
+
+
+def test_e2e_maximal_same_gaussian_2d(gaussian_posterior_2d, output_dir):
+    """E2E: MaximalCoupling(IndependentProposal, IndependentProposal) + same Gaussian 2d."""
+    dim = 2
+    indep_c = IndependentProposal(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    indep_f = IndependentProposal(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    coupling = MaximalCoupling(indep_c, indep_f)
+    init_c = np.zeros((dim, 1))
+    init_f = np.zeros((dim, 1))
+    samples_c, samples_f, ar_c, ar_f = _run_coupled_e2e(
+        gaussian_posterior_2d,
+        gaussian_posterior_2d,
+        coupling,
+        init_c,
+        init_f,
+        output_dir,
+        n_iterations=50,
+    )
+    _assert_e2e_basics(samples_c, samples_f, 50, ar_c, ar_f)
+
+
+def test_e2e_maximal_transport(gaussian_posterior_2d, output_dir):
+    """E2E: MaximalCoupling with TransportProposalBase(IndependentProposal, IdentityMap)."""
+    dim = 2
+    base_c = IndependentProposal(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    base_f = IndependentProposal(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    transport_c = TransportProposalBase(base_c, IdentityMap(dim=dim))
+    transport_f = TransportProposalBase(base_f, IdentityMap(dim=dim))
+    coupling = MaximalCoupling(transport_c, transport_f)
+    init_c = np.zeros((dim, 1))
+    init_f = np.zeros((dim, 1))
+    samples_c, samples_f, ar_c, ar_f = _run_coupled_e2e(
+        gaussian_posterior_2d,
+        gaussian_posterior_2d,
+        coupling,
+        init_c,
+        init_f,
+        output_dir,
+        n_iterations=50,
+    )
+    _assert_e2e_basics(samples_c, samples_f, 50, ar_c, ar_f)
+
+
+# --- Restart from checkpoint ---
+
+
+def test_e2e_restart_from_checkpoint(gaussian_posterior_2d, output_dir):
+    """Run 5 iters, load, restart with 5 more; assert iteration continuity (6..10)."""
+    dim = 2
+    grw_c = GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    grw_f = GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    coupling = SynceCoupling(grw_c, grw_f)
+    kernel = CoupledKernelBase(
+        coarse_model=gaussian_posterior_2d,
+        fine_model=gaussian_posterior_2d,
+        coupled_proposal=coupling,
+    )
+    init_c = np.zeros((dim, 1))
+    init_f = np.zeros((dim, 1))
+    sampler1 = coupledMCMCsampler(
+        kernel=kernel,
+        initial_position_coarse=init_c,
+        initial_position_fine=init_f,
+        n_iterations=5,
+    )
+    sampler1.run(output_dir)
+    restart_c, restart_f = load_coupled_samples(output_dir)
+    assert len(restart_c) == 5
+    assert len(restart_f) == 5
+    for i, (sc, sf) in enumerate(zip(restart_c, restart_f)):
+        assert (sc.metadata or {}).get("iteration") == i + 1
+        assert (sf.metadata or {}).get("iteration") == i + 1
+    sampler2 = coupledMCMCsampler(
+        kernel=kernel,
+        initial_position_coarse=init_c,
+        initial_position_fine=init_f,
+        n_iterations=10,
+        restart_coarse=restart_c,
+        restart_fine=restart_f,
+    )
+    sampler2.run(output_dir)
+    final_c, final_f = load_coupled_samples(output_dir)
+    assert len(final_c) == 10
+    assert len(final_f) == 10
+    iterations_c = [(s.metadata or {}).get("iteration") for s in final_c]
+    iterations_f = [(s.metadata or {}).get("iteration") for s in final_f]
+    assert iterations_c == list(range(1, 11))
+    assert iterations_f == list(range(1, 11))
+
+
+# --- Edge cases ---
+
+
+def test_e2e_n_iterations_one(gaussian_posterior_2d, output_dir):
+    """E2E: n_iterations=1 with real kernel + Synce + Gaussian 2d."""
+    dim = 2
+    grw_c = GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    grw_f = GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    coupling = SynceCoupling(grw_c, grw_f)
+    samples_c, samples_f, ar_c, ar_f = _run_coupled_e2e(
+        gaussian_posterior_2d,
+        gaussian_posterior_2d,
+        coupling,
+        np.zeros((dim, 1)),
+        np.zeros((dim, 1)),
+        output_dir,
+        n_iterations=1,
+    )
+    assert len(samples_c) == 1
+    assert len(samples_f) == 1
+    assert samples_c[0].log_posterior is not None
+    assert samples_f[0].log_posterior is not None
+    assert os.path.exists(f"{output_dir}/samples_coarse.pkl")
+    assert os.path.exists(f"{output_dir}/samples_fine.pkl")
+
+
+def test_e2e_checkpoint_layout_real_kernel(gaussian_posterior_2d, output_dir):
+    """Checkpoint layout with real kernel + Synce: samples/samples_*_k.pkl."""
+    dim = 2
+    grw_c = GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    grw_f = GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    coupling = SynceCoupling(grw_c, grw_f)
+    _run_coupled_e2e(
+        gaussian_posterior_2d,
+        gaussian_posterior_2d,
+        coupling,
+        np.zeros((dim, 1)),
+        np.zeros((dim, 1)),
+        output_dir,
+        n_iterations=6,
+        save_iteration=2,
+    )
+    assert os.path.exists(f"{output_dir}/samples_coarse.pkl")
+    assert os.path.exists(f"{output_dir}/samples_fine.pkl")
+    assert os.path.isdir(f"{output_dir}/samples")
+    assert os.path.exists(f"{output_dir}/samples/samples_coarse_2.pkl")
+    assert os.path.exists(f"{output_dir}/samples/samples_fine_2.pkl")
+    assert os.path.exists(f"{output_dir}/samples/samples_coarse_4.pkl")
+    assert os.path.exists(f"{output_dir}/samples/samples_fine_4.pkl")
+
+
+# --- Optional: kernel propose + acceptance_ratio smoke per coupling ---
+
+
+def _smoke_kernel_one_step(coarse_model, fine_model, coupled_proposal, dim=2):
+    """One propose + acceptance_ratio step; no full chain."""
+    kernel = CoupledKernelBase(
+        coarse_model=coarse_model,
+        fine_model=fine_model,
+        coupled_proposal=coupled_proposal,
+    )
+    init_c = ChainState(
+        position=np.zeros((dim, 1)),
+        log_posterior=0.0,
+        metadata={"mean": np.zeros((dim, 1)), "covariance": np.eye(dim)},
+    )
+    init_f = ChainState(
+        position=np.zeros((dim, 1)),
+        log_posterior=0.0,
+        metadata={"mean": np.zeros((dim, 1)), "covariance": np.eye(dim)},
+    )
+    prop_c, prop_f = kernel.propose(init_c, init_f)
+    ar_c, ar_f = kernel.acceptance_ratio(init_c, prop_c, init_f, prop_f)
+    assert 0 <= ar_c and np.isfinite(ar_c)
+    assert 0 <= ar_f and np.isfinite(ar_f)
+    return ar_c, ar_f
+
+
+def test_smoke_kernel_synce(gaussian_posterior_2d):
+    """One-shot kernel.propose + acceptance_ratio with SynceCoupling."""
+    dim = 2
+    grw_c = GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    grw_f = GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    _smoke_kernel_one_step(
+        gaussian_posterior_2d,
+        gaussian_posterior_2d,
+        SynceCoupling(grw_c, grw_f),
+        dim=dim,
+    )
+
+
+def test_smoke_kernel_independent(gaussian_posterior_2d):
+    """One-shot kernel.propose + acceptance_ratio with IndependentCoupling."""
+    dim = 2
+    indep_c = IndependentProposal(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    indep_f = IndependentProposal(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    _smoke_kernel_one_step(
+        gaussian_posterior_2d,
+        gaussian_posterior_2d,
+        IndependentCoupling(indep_c, indep_f),
+        dim=dim,
+    )
+
+
+def test_smoke_kernel_maximal(gaussian_posterior_2d):
+    """One-shot kernel.propose + acceptance_ratio with MaximalCoupling."""
+    dim = 2
+    indep_c = IndependentProposal(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    indep_f = IndependentProposal(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    _smoke_kernel_one_step(
+        gaussian_posterior_2d,
+        gaussian_posterior_2d,
+        MaximalCoupling(indep_c, indep_f),
+        dim=dim,
+    )

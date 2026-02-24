@@ -312,7 +312,7 @@ def log_quartic(
     return lognormpdf(y, mu, sigma)
 
 
-def nearest_positive_definite(
+def _nearest_positive_definite(
     A: np.ndarray,
     tol: Optional[float] = None,
 ) -> np.ndarray:
@@ -343,20 +343,20 @@ def nearest_positive_definite(
     A2 = (B + H) / 2
     A3 = (A2 + A2.T) / 2
 
-    if is_positive_definite(A3):
+    if _is_positive_definite(A3):
         return A3
 
     spacing = np.spacing(np.linalg.norm(A)) if tol is None else tol
     identity_matrix = np.eye(A.shape[0])
     k = 1
-    while not is_positive_definite(A3):
+    while not _is_positive_definite(A3):
         mineig = np.min(np.real(np.linalg.eigvals(A3)))
         A3 = A3 + identity_matrix * (-mineig * k**2 + spacing)
         k += 1
     return A3
 
 
-def is_positive_definite(A: np.ndarray) -> bool:
+def _is_positive_definite(A: np.ndarray) -> bool:
     """
     Check if a matrix is positive definite via Cholesky decomposition.
 
@@ -377,7 +377,7 @@ def is_positive_definite(A: np.ndarray) -> bool:
         return False
 
 
-def batched_variance(
+def _batched_variance(
     data: np.ndarray,
     batch_size: Optional[int] = None,
 ) -> np.ndarray:
