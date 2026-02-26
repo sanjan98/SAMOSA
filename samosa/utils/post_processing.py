@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import pickle
+import shutil
 import warnings
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
@@ -63,7 +64,8 @@ def _setup_plot_style(
         img_kwargs = _default_img_kwargs()
     sns.set_style("white")
     sns.set_context("talk")
-    plt.rc("text", usetex=True)
+    if shutil.which("latex"):
+        plt.rc("text", usetex=True)
     plt.rc("font", family="serif")
     plt.rcParams.update(
         {
