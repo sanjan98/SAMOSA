@@ -1,2 +1,0 @@
-ar_coarse: 0.448
-ar_fine: 0.4483

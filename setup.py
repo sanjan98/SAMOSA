@@ -16,6 +16,6 @@ setup(
     ],
     extras_require={
         "test": ["pytest>=7.0"],
-        "maps": ["MParT", "normflows", "torch"],
+        "maps": ["MParT", "normflows", "torch>=1.9"],
     },
 )

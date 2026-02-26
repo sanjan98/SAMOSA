@@ -20,12 +20,17 @@ from samosa.core import (
     MLMCCalculator,
     MLMCPostProcessor,
 )
-from samosa.maps import (
-    LinearOptimalTransportMap,
-    LowerTriangularMap,
-    Normalizingflow,
-    RealNVPMap,
-)
+from samosa.maps import LinearOptimalTransportMap
+
+try:
+    from samosa.maps import LowerTriangularMap
+except ImportError:
+    LowerTriangularMap = None  # optional: requires MParT
+try:
+    from samosa.maps import Normalizingflow, RealNVPMap
+except ImportError:
+    Normalizingflow = None  # optional: requires torch
+    RealNVPMap = None
 from samosa.proposals import (
     GaussianRandomWalk,
     GlobalAdapter,
