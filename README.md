@@ -30,18 +30,12 @@ Core dependencies (numpy, scipy) are listed in `requirements.txt` and in `setup.
 
 ### Optional: Transport maps
 
-To use **transport maps** (`LowerTriangularMap`, `Normalizingflow`, `RealNVP` in `samosa.maps`), you need:
+To use **transport maps** (`LowerTriangularMap`, `Normalizingflow`, `RealNVP` in `samosa.maps`), you need **MParT**, **normflows**, and **PyTorch**. These packages have non-trivial build or platform requirements and are best installed separately according to their official documentation, not necessarily via a single `pip` command:
 
-- **MParT** — [GitHub](https://github.com/MeasureTransport/MParT). Install with `pip install MParT` or `conda install -c conda-forge mpart`.
-- **normflows** (and PyTorch) — [GitHub](https://github.com/VincentStimper/normalizing-flows). Install with `pip install normflows`.
+- **MParT** — [GitHub](https://github.com/MeasureTransport/MParT). Follow the project’s install instructions (e.g. `pip install MParT` or `conda install -c conda-forge mpart` where supported).
+- **normflows** (and **PyTorch**) — [GitHub](https://github.com/VincentStimper/normalizing-flows). Install PyTorch for your platform first, then `pip install normflows` as described in the normflows docs.
 
-You can install optional map dependencies with:
 
-```bash
-pip install -r requirements-maps.txt
-```
-
-(or `pip install -e ".[maps]"` if the package defines a `maps` extra).
 
 ## Quick start
 
@@ -62,30 +56,15 @@ sampler = SingleChainSampler(kernel, initial_position=np.zeros((2, 1)), n_iterat
 sampler.run("output")
 ```
 
-## Package hierarchy
+## How sampling works
 
-The `samosa/` package is organized as follows:
+In MCMC we use a **Markov chain** to generate samples from a target distribution (e.g. a Bayesian posterior). The chain has a transition rule: from the current state we propose a new state and then accept or reject it so that, in the limit, the chain’s stationary distribution is the target. SAMOSA is built around a small set of pieces that you combine to build such a chain.
 
-- **core/** — State (`ChainState`), model protocol, and proposal base classes: `ProposalBase`, `AdaptiveProposal`, `TransportProposalBase`. Also the transport map interface and MLMC utilities.
+**Building a chain.** The main ingredients of any sampling algorithm are a **proposal** (how we suggest new states) and an **acceptance rule** (whether we keep or reject the proposal). Together they form a **kernel**: one step of the chain. The kernel also takes a **model** that defines the target (e.g. log-posterior). A **sampler** then runs the kernel repeatedly from an initial position to produce a sequence of samples.
 
-- **kernels/** — Transition kernels: `MetropolisHastingsKernel`, `DelayedRejectionKernel`.
+**Proposals, adapters, and transport maps.** Proposals can be as simple as a Gaussian random walk. A **base proposal** can be wrapped with an **adapter** so that its parameters (e.g. covariance or scale) are updated during the run from the history of the chain. Alternatively (or in addition), a proposal can be wrapped with a **transport map**. Transport maps are bijection operators that transport measures. In simple words, they map points from a complex distribution to a reference distribution. In MCMC sampling, we map the current point from target space to reference space, propose in the reference space (e.g. standard Gaussian), then map the point into the target space. That often improves efficiency on difficult posteriors. So in SAMOSA you can use base proposals alone, or combine them with adapters and/or transport maps.
 
-- **proposals/** — Base proposals (e.g. `GaussianRandomWalk`), adapters (`HaarioAdapter`, `GlobalAdapter`), and wiring via `AdaptiveProposal`.
-
-- **samplers/** — `SingleChainSampler` (and coupled / MLDA samplers for multi-level and coupling).
-
-- **maps/** — Transport maps (`LowerTriangularMap`, `RealNVPMap`, `LinearOptimalTransportMap`) used with `TransportProposalBase`.
-
-- **utils/** — `tools` (e.g. `laplace_approx`, `log_banana`) and `post_processing` (`load_samples`, `get_position_from_states`, `scatter_matrix`, `plot_trace`, `plot_lag`).
-
-## Sampling strategy progression
-
-Examples are ordered by increasing complexity:
-
-1. **Simple** — Fixed proposal (e.g. Gaussian random walk), optionally tuned with a Laplace approximation at the MAP.
-2. **Adaptation** — Same base proposal wrapped with an adapter (e.g. Haario or Global) so covariance or scale is adapted during the run.
-3. **Delayed rejection** — After a rejected first stage, propose again (e.g. with scaled covariance) to improve acceptance.
-4. **Transport maps** — Propose in a reference space (e.g. N(0,I)) and map back to the target; the map is often pre-adapted using samples from a previous run.
+**Kernels and samplers.** SAMOSA provides **three kernels**: `MetropolisHastingsKernel` (standard accept/reject), `DelayedRejectionKernel` (optional second-stage proposal after a reject), and `CoupledKernel` (for two chains with a shared accept/reject). The **two main samplers** are `SingleChainSampler` (one chain) and `CoupledChainSampler` (two chains, used e.g. for multilevel or coupling). You plug a kernel into a sampler and run it for a given number of iterations.
 
 ## Examples
 
