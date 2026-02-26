@@ -11,6 +11,7 @@ setup(
         "numpy>=1.20",
         "scipy>=1.7",
         "matplotlib>=3.5",
+        "seaborn>=0.12",
         "mpi4py>=3.0",
     ],
     extras_require={

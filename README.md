@@ -1,8 +1,11 @@
 # SAMOSA
 
-<img src="samosa_logo.svg" width="200" alt="SAMOSA logo" />
-
-**SAMOSA** (Space-Aligned Multi-fidelity Open Sampling Architecture) is a Python package for MCMC sampling with multi-fidelity and coupled-chain support. Multi-fidelity MCMC (e.g. MLMC) features are included.
+<table>
+  <tr>
+    <td><img src="samosa_logo.svg" width="120" alt="SAMOSA logo" /></td>
+    <td><strong>SAMOSA</strong> (Space-Aligned Multi-fidelity Open Sampling Architecture) is a Python package for MCMC sampling with multi-fidelity and coupled-chain support. Multi-fidelity MCMC (e.g. MLMC) features are included.</td>
+  </tr>
+</table>
 
 [![CI](https://github.com/sanjan-m/SAMOSA/actions/workflows/ci.yml/badge.svg)](https://github.com/sanjan-m/SAMOSA/actions/workflows/ci.yml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
