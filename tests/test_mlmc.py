@@ -10,8 +10,6 @@ pytest is run without mpirun).
 import os
 import pickle
 import tempfile
-from typing import Optional
-
 import numpy as np
 import pytest
 from mpi4py import MPI
@@ -102,10 +100,6 @@ def mlmc_levels():
 
     level0 = MLMCLevel(
         level=0,
-        coarse_model=None,
-        fine_model=model0,
-        coarse_proposal=None,
-        fine_proposal=adaptive_prop,
         kernel=kernel0,
         n_samples=100,
         initial_position_coarse=None,
@@ -113,10 +107,6 @@ def mlmc_levels():
     )
     level1 = MLMCLevel(
         level=1,
-        coarse_model=model0,
-        fine_model=model1,
-        coarse_proposal=adaptive_prop,
-        fine_proposal=adaptive_prop,
         kernel=kernel1,
         n_samples=50,
         initial_position_coarse=np.zeros((2, 1)),
@@ -196,23 +186,18 @@ def test_create_mlmc_levels_success():
     prop = GaussianRandomWalk(mu=np.zeros((2, 1)), cov=np.eye(2))
     kernel = MetropolisHastingsKernel(model=model, proposal=prop)
 
-    models = [(None, model)]
-    proposals = [(None, prop)]
     kernels = [kernel]
     samples_per_level = [100]
     initial_positions = [(None, np.zeros((2, 1)))]
 
     levels = create_mlmc_levels(
-        models=models,
-        proposals=proposals,
         kernels=kernels,
         samples_per_level=samples_per_level,
         initial_positions=initial_positions,
     )
     assert len(levels) == 1
     assert levels[0].level == 0
-    assert levels[0].coarse_model is None
-    assert levels[0].fine_model is model
+    assert levels[0].kernel is kernel
     assert levels[0].initial_position_fine is not None
 
 
@@ -222,16 +207,12 @@ def test_create_mlmc_levels_length_mismatch():
     prop = GaussianRandomWalk(mu=np.zeros((2, 1)), cov=np.eye(2))
     kernel = MetropolisHastingsKernel(model=model, proposal=prop)
 
-    models = [(None, model)]
-    proposals = [(None, prop)]
     kernels = [kernel]
     samples_per_level = [100, 200]  # length 2
     initial_positions = [(None, np.zeros((2, 1)))]
 
     with pytest.raises(ValueError, match="same length"):
         create_mlmc_levels(
-            models=models,
-            proposals=proposals,
             kernels=kernels,
             samples_per_level=samples_per_level,
             initial_positions=initial_positions,
@@ -307,29 +288,75 @@ def test_compute_qoi_differences_qoi_none_fallback(chain_states_with_qoi):
 # -----------------------------------------------------------------------------
 
 
-def test_mlmc_sampler_validation_level0_coarse_forbidden():
-    """Level 0 must not have coarse model or proposal."""
+def test_mlmc_sampler_validation_level0_requires_single_chain_kernel():
+    """Level 0 must use a single-chain kernel (MetropolisHastingsKernel or DelayedRejectionKernel)."""
+    model = SimpleModel(np.zeros((2, 1)), np.eye(2))
+    prop = GaussianRandomWalk(mu=np.zeros((2, 1)), cov=np.eye(2))
+    coupled_prop = SynceCoupling(prop, prop)
+    kernel = CoupledKernelBase(
+        coarse_model=model,
+        fine_model=model,
+        coupled_proposal=coupled_prop,
+    )
+
+    invalid_level = MLMCLevel(
+        level=0,
+        kernel=kernel,  # invalid: coupled kernel on level 0
+        n_samples=10,
+        initial_position_fine=np.zeros((2, 1)),
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with pytest.raises(ValueError, match="Level 0 must use a single-chain kernel"):
+            MLMCSampler(levels=[invalid_level], output_dir=tmpdir, print_progress=False)
+
+
+def test_mlmc_sampler_validation_level0_requires_initial_position_fine():
+    """Level 0 requires initial_position_fine."""
     model = SimpleModel(np.zeros((2, 1)), np.eye(2))
     prop = GaussianRandomWalk(mu=np.zeros((2, 1)), cov=np.eye(2))
     kernel = MetropolisHastingsKernel(model=model, proposal=prop)
 
     invalid_level = MLMCLevel(
         level=0,
-        coarse_model=model,  # invalid
-        fine_model=model,
-        coarse_proposal=prop,  # invalid
-        fine_proposal=prop,
         kernel=kernel,
         n_samples=10,
-        initial_position_fine=np.zeros((2, 1)),
+        initial_position_fine=None,  # invalid
     )
     with tempfile.TemporaryDirectory() as tmpdir:
-        with pytest.raises(ValueError, match="Level 0"):
+        with pytest.raises(ValueError, match="Level 0 requires initial_position_fine"):
             MLMCSampler(levels=[invalid_level], output_dir=tmpdir, print_progress=False)
 
 
-def test_mlmc_sampler_validation_level1_requires_coarse():
-    """Level > 0 must have coarse model and proposal."""
+def test_mlmc_sampler_validation_level1_requires_coupled_kernel():
+    """Level > 0 must use CoupledKernelBase."""
+    model = SimpleModel(np.zeros((2, 1)), np.eye(2))
+    prop = GaussianRandomWalk(mu=np.zeros((2, 1)), cov=np.eye(2))
+    kernel0 = MetropolisHastingsKernel(model=model, proposal=prop)
+
+    level0 = MLMCLevel(
+        level=0,
+        kernel=kernel0,
+        n_samples=10,
+        initial_position_fine=np.zeros((2, 1)),
+    )
+    invalid_level1 = MLMCLevel(
+        level=1,
+        kernel=kernel0,  # invalid: single-chain kernel on level 1
+        n_samples=10,
+        initial_position_coarse=np.zeros((2, 1)),
+        initial_position_fine=np.zeros((2, 1)),
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with pytest.raises(ValueError, match="Level 1 must use a CoupledKernelBase"):
+            MLMCSampler(
+                levels=[level0, invalid_level1],
+                output_dir=tmpdir,
+                print_progress=False,
+            )
+
+
+def test_mlmc_sampler_validation_level1_requires_both_initial_positions():
+    """Level > 0 requires both initial_position_coarse and initial_position_fine."""
     model = SimpleModel(np.zeros((2, 1)), np.eye(2))
     prop = GaussianRandomWalk(mu=np.zeros((2, 1)), cov=np.eye(2))
     coupled_prop = SynceCoupling(prop, prop)
@@ -342,27 +369,19 @@ def test_mlmc_sampler_validation_level1_requires_coarse():
 
     level0 = MLMCLevel(
         level=0,
-        coarse_model=None,
-        fine_model=model,
-        coarse_proposal=None,
-        fine_proposal=prop,
         kernel=kernel0,
         n_samples=10,
         initial_position_fine=np.zeros((2, 1)),
     )
     invalid_level1 = MLMCLevel(
         level=1,
-        coarse_model=None,  # invalid
-        fine_model=model,
-        coarse_proposal=None,  # invalid
-        fine_proposal=prop,
         kernel=kernel1,
         n_samples=10,
-        initial_position_coarse=np.zeros((2, 1)),
+        initial_position_coarse=None,  # invalid
         initial_position_fine=np.zeros((2, 1)),
     )
     with tempfile.TemporaryDirectory() as tmpdir:
-        with pytest.raises(ValueError, match="Level 1 must have both"):
+        with pytest.raises(ValueError, match="initial_position_coarse"):
             MLMCSampler(
                 levels=[level0, invalid_level1],
                 output_dir=tmpdir,

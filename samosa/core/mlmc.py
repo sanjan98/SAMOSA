@@ -7,16 +7,30 @@ ranks are available.
 
 Nested parallelism (models using MPI internally)
 -----------------------------------------------
-When model evaluations (e.g., CFD solvers) use MPI internally, use
-``split_comm_for_levels()`` to split COMM_WORLD by level. Each level gets a
-sub-communicator; pass that sub-comm to your model so it can use it for internal
-parallelism. Example layout with 8 ranks and 4 levels:
-  - Ranks 0-1: level 0 (sub_comm size 2)
-  - Ranks 2-3: level 1 (sub_comm size 2)
-  - etc.
-The CFD solver in each level receives its sub-comm and uses it for domain
-decomposition. Coarse and fine within a level run sequentially, so they share
-the same sub-comm.
+SAMOSA does not run or manage MPI inside the model. If your model (e.g. a PDE
+solver) uses MPI internally, you must implement one of these patterns:
+
+Option A – Sub-communicator (in-process MPI model)
+  Use ``split_comm_for_levels(MPI.COMM_WORLD, num_levels, rank)`` to get a
+  sub-communicator for the current level. You are responsible for passing that
+  sub_comm into your model (e.g. store it in the model at construction, or use a
+  closure over the rank's sub_comm). When the kernel calls the model, the model
+  uses that sub_comm for its internal solver (e.g. domain decomposition). SAMOSA
+  does not pass a communicator into the model; the model protocol is unchanged.
+
+  Example layout with 8 ranks and 4 levels:
+    - Ranks 0-1: level 0 (sub_comm size 2)
+    - Ranks 2-3: level 1 (sub_comm size 2)
+    - etc.
+  Coarse and fine within a level run sequentially, so they share the same
+  sub_comm.
+
+Option B – Subprocess (MPI executable model)
+  If the model is an external MPI executable (e.g. ``mpirun -n 4 solver.exe``),
+  run it in a subprocess (e.g. ``subprocess.run(...)``) and read outputs.
+  SAMOSA's MPI is then used only to distribute levels across ranks; there is no
+  shared communicator with the solver in the same process. This also works when
+  the MPI executable needs a different Python environment or packages.
 """
 
 from __future__ import annotations
@@ -27,15 +41,13 @@ import pickle
 import time
 import warnings
 from dataclasses import dataclass
-from typing import Any, List, Optional, Sequence, Tuple, Union, cast
+from typing import List, Optional, Sequence, Tuple, Union, cast
 
 import numpy as np
 import matplotlib.pyplot as plt
 from mpi4py import MPI
 
 from samosa.core.kernel import CoupledKernelBase
-from samosa.core.model import ModelProtocol
-from samosa.core.proposal import Proposal
 from samosa.core.state import ChainState
 from samosa.kernels.delayedrejection import DelayedRejectionKernel
 from samosa.kernels.metropolis import MetropolisHastingsKernel
@@ -145,13 +157,14 @@ def split_comm_for_levels(
 
 @dataclass
 class MLMCLevel:
-    """Configuration for a single MLMC level"""
+    """Configuration for a single MLMC level.
+
+    Level 0 uses a single-chain kernel (MetropolisHastingsKernel or
+    DelayedRejectionKernel); level > 0 uses a coupled kernel (CoupledKernelBase).
+    The kernel already encapsulates model(s) and proposal(s).
+    """
 
     level: int
-    coarse_model: Optional[ModelProtocol]  # None for level 0
-    fine_model: ModelProtocol
-    coarse_proposal: Optional[Proposal]  # None for level 0
-    fine_proposal: Proposal
     kernel: LevelKernel
     n_samples: int
     initial_position_coarse: Optional[np.ndarray] = None  # None for level 0
@@ -184,12 +197,15 @@ class MLMCSampler:
         levels: List[MLMCLevel],
         output_dir: str = "./mlmc_output",
         print_progress: bool = True,
+        print_iteration: Optional[int] = None,
+        save_iteration: Optional[int] = None,
     ):
 
         self.levels = sorted(levels, key=lambda x: x.level)
         self.output_dir = output_dir
         self.print_progress = print_progress
-
+        self.print_iteration = print_iteration
+        self.save_iteration = save_iteration
         # MPI setup
         self.comm = MPI.COMM_WORLD
         self.rank = self.comm.Get_rank()
@@ -248,11 +264,9 @@ class MLMCSampler:
 
     def _sample_level(self, level: MLMCLevel) -> None:
         """Sample a single MLMC level and save to files."""
-
+        print_iter = self.print_iteration
+        save_iter = self.save_iteration
         level_output_dir = f"{self.output_dir}/level_{level.level}"
-        print_iter = max(int(level.n_samples // 10), 1)
-        save_iter = max(int(level.n_samples // 5), 1) if level.n_samples > 100 else None
-
         if level.level == 0:
             # Level 0: single chain sampling of finest model only
             if level.initial_position_fine is None:
@@ -309,21 +323,30 @@ class MLMCSampler:
                 f.write(f"ar_fine: {ar_fine}\n")
 
     def _validate_levels(self):
-        """Validate the MLMC level configuration"""
-        # Check that level 0 has no coarse model
-        if self.levels[0].level == 0:
-            if (
-                self.levels[0].coarse_model is not None
-                or self.levels[0].coarse_proposal is not None
-            ):
-                raise ValueError("Level 0 should not have coarse model or proposal")
-
-        # Check that levels > 0 have both coarse and fine models
-        for level in self.levels[1:]:
-            if level.coarse_model is None or level.coarse_proposal is None:
-                raise ValueError(
-                    f"Level {level.level} must have both coarse and fine models/proposals"
-                )
+        """Validate the MLMC level configuration."""
+        single_chain_types = (MetropolisHastingsKernel, DelayedRejectionKernel)
+        for level in self.levels:
+            if level.level == 0:
+                if not isinstance(level.kernel, single_chain_types):
+                    raise ValueError(
+                        "Level 0 must use a single-chain kernel "
+                        "(MetropolisHastingsKernel or DelayedRejectionKernel)"
+                    )
+                if level.initial_position_fine is None:
+                    raise ValueError("Level 0 requires initial_position_fine")
+            else:
+                if not isinstance(level.kernel, CoupledKernelBase):
+                    raise ValueError(
+                        f"Level {level.level} must use a CoupledKernelBase kernel"
+                    )
+                if (
+                    level.initial_position_coarse is None
+                    or level.initial_position_fine is None
+                ):
+                    raise ValueError(
+                        f"Level {level.level} requires both initial_position_coarse "
+                        "and initial_position_fine"
+                    )
 
         # Check level numbering
         expected_levels = list(range(len(self.levels)))
@@ -624,7 +647,9 @@ class MLMCPostProcessor:
         for level in my_levels:
             if self.print_progress:
                 logger.info("Process %s: Processing level %s...", self.rank, level)
-
+            level_dir = f"{self.output_dir}/level_{level}"
+            self.fig_dir = f"{level_dir}/figures"
+            os.makedirs(self.fig_dir, exist_ok=True)
             try:
                 # Load samples for this level
                 samples_coarse, samples_fine = self._load_samples_for_level(level)
@@ -699,9 +724,6 @@ class MLMCPostProcessor:
         burnin: float = 0.0,
     ):
         """Create scatter plots for a level"""
-
-        level_dir = f"{self.output_dir}/level_{level}"
-
         # Extract positions
         positions_fine = get_position_from_states(samples_fine, burnin=burnin)
 
@@ -714,7 +736,7 @@ class MLMCPostProcessor:
             )
 
             fig_scatter.savefig(
-                f"{level_dir}/scatter.png", dpi=300, bbox_inches="tight"
+                f"{self.fig_dir}/scatter.png", dpi=300, bbox_inches="tight"
             )
             plt.close(fig_scatter)
 
@@ -732,7 +754,7 @@ class MLMCPostProcessor:
             )
 
             fig_scatter.savefig(
-                f"{level_dir}/scatter.png", dpi=300, bbox_inches="tight"
+                f"{self.fig_dir}/scatter.png", dpi=300, bbox_inches="tight"
             )
             plt.close(fig_scatter)
 
@@ -745,15 +767,12 @@ class MLMCPostProcessor:
         burnin: float = 0.0,
     ):
         """Create trace plots per dimension for a level"""
-
-        level_dir = f"{self.output_dir}/level_{level}"
-
         # Extract positions
         positions_fine = get_position_from_states(samples_fine, burnin=burnin)
 
         if level == 0:
             fig, _ = plot_trace([positions_fine], img_kwargs=img_kwargs)
-            fig.savefig(f"{level_dir}/trace.png", dpi=300, bbox_inches="tight")
+            fig.savefig(f"{self.fig_dir}/trace.png", dpi=300, bbox_inches="tight")
             plt.close(fig)
 
         if level > 0:
@@ -763,7 +782,7 @@ class MLMCPostProcessor:
             fig, _ = plot_trace(
                 [positions_coarse, positions_fine], img_kwargs=img_kwargs
             )
-            fig.savefig(f"{level_dir}/trace.png", dpi=300, bbox_inches="tight")
+            fig.savefig(f"{self.fig_dir}/trace.png", dpi=300, bbox_inches="tight")
             plt.close(fig)
 
     def _create_level_autocorr_plots(
@@ -776,9 +795,6 @@ class MLMCPostProcessor:
         burnin: float = 0.0,
     ):
         """Create autocorrelation plots per dimension for a level"""
-
-        level_dir = f"{self.output_dir}/level_{level}"
-
         # Extract positions
         positions_fine = get_position_from_states(samples_fine, burnin=burnin)
 
@@ -786,7 +802,7 @@ class MLMCPostProcessor:
             fig, _, _, _ = plot_lag(
                 [positions_fine], maxlag=maxlag, img_kwargs=img_kwargs
             )
-            fig.savefig(f"{level_dir}/autocorr.png", dpi=300, bbox_inches="tight")
+            fig.savefig(f"{self.fig_dir}/autocorr.png", dpi=300, bbox_inches="tight")
             plt.close(fig)
 
         if level > 0:
@@ -796,7 +812,7 @@ class MLMCPostProcessor:
             fig, _, _, _ = plot_lag(
                 [positions_coarse, positions_fine], maxlag=maxlag, img_kwargs=img_kwargs
             )
-            fig.savefig(f"{level_dir}/autocorr.png", dpi=300, bbox_inches="tight")
+            fig.savefig(f"{self.fig_dir}/autocorr.png", dpi=300, bbox_inches="tight")
             plt.close(fig)
 
     def _create_level_joint_plots(
@@ -808,8 +824,6 @@ class MLMCPostProcessor:
         burnin: float = 0.0,
     ):
         """Create joint scatter plots for a level (only for level > 0)"""
-
-        level_dir = f"{self.output_dir}/level_{level}"
 
         if level == 0:
             return  # No joint plots for level 0
@@ -828,52 +842,62 @@ class MLMCPostProcessor:
         # Save joint plots
         for i, fig in enumerate(fig_joints):
             fig.savefig(
-                f"{level_dir}/joint_dim_{i + 1}.png", dpi=300, bbox_inches="tight"
+                f"{self.fig_dir}/joint_dim_{i + 1}.png", dpi=300, bbox_inches="tight"
             )
             plt.close(fig)
 
 
-# Utility function for easy setup (unchanged)
 def create_mlmc_levels(
-    models: Sequence[Tuple[Optional[ModelProtocol], ModelProtocol]],
-    proposals: Sequence[Tuple[Optional[Proposal], Proposal]],
     kernels: Sequence[LevelKernel],
     samples_per_level: Sequence[int],
     initial_positions: Sequence[Tuple[Optional[np.ndarray], np.ndarray]],
+    restart_coarse: Optional[Sequence[Optional[List[ChainState]]]] = None,
+    restart_fine: Optional[Sequence[Optional[List[ChainState]]]] = None,
 ) -> List[MLMCLevel]:
-    """Utility function to create MLMC levels from lists of components."""
-    if not (
-        len(models)
-        == len(proposals)
-        == len(kernels)
-        == len(samples_per_level)
-        == len(initial_positions)
-    ):
-        raise ValueError("All input lists must have the same length")
+    """Create MLMC levels from pre-built kernels and per-level config.
+
+    The user supplies one kernel per level (each kernel already has model and
+    proposal inside). Level 0 must use a single-chain kernel; level > 0 must
+    use a coupled kernel.
+
+    Args:
+        kernels: One kernel per level (MetropolisHastingsKernel or
+            DelayedRejectionKernel for level 0; CoupledKernelBase for level > 0).
+        samples_per_level: Number of samples to draw per level.
+        initial_positions: Per level (coarse_init, fine_init). For level 0,
+            coarse_init must be None.
+        restart_coarse: Optional restart samples per level (None for level 0).
+        restart_fine: Optional restart samples per level.
+
+    Returns:
+        List of MLMCLevel instances.
+    """
+    n = len(kernels)
+    if not (n == len(samples_per_level) == len(initial_positions)):
+        raise ValueError(
+            "kernels, samples_per_level, and initial_positions must have the same length"
+        )
+    if restart_coarse is not None and len(restart_coarse) != n:
+        raise ValueError("restart_coarse must have same length as kernels")
+    if restart_fine is not None and len(restart_fine) != n:
+        raise ValueError("restart_fine must have same length as kernels")
 
     levels = []
-    for i, (
-        (coarse_model, fine_model),
-        (coarse_proposal, fine_proposal),
-        kernel,
-        n_samples,
-        (coarse_init, fine_init),
-    ) in enumerate(
-        zip(models, proposals, kernels, samples_per_level, initial_positions)
-    ):
-        level = MLMCLevel(
-            level=i,
-            coarse_model=coarse_model,
-            fine_model=fine_model,
-            coarse_proposal=coarse_proposal,
-            fine_proposal=fine_proposal,
-            kernel=kernel,
-            n_samples=n_samples,
-            initial_position_coarse=coarse_init,
-            initial_position_fine=fine_init,
+    for i in range(n):
+        coarse_init, fine_init = initial_positions[i]
+        rc = restart_coarse[i] if restart_coarse is not None else None
+        rf = restart_fine[i] if restart_fine is not None else None
+        levels.append(
+            MLMCLevel(
+                level=i,
+                kernel=kernels[i],
+                n_samples=samples_per_level[i],
+                initial_position_coarse=coarse_init,
+                initial_position_fine=fine_init,
+                restart_coarse=rc,
+                restart_fine=rf,
+            )
         )
-        levels.append(level)
-
     return levels
 
 
@@ -890,7 +914,7 @@ if __name__ == "__main__":
             cov=np.array([[2, 2 ** (-level)], [2 ** (-level), 1]]),
         )
         output["log_posterior"] = log_posterior
-        output["cost"] = 1
+        output["cost"] = 2**level
         output["qoi"] = x[0]
         return output
 
@@ -898,51 +922,36 @@ if __name__ == "__main__":
     from samosa.proposals.adapters import GlobalAdapter
     from samosa.proposals.coupled_proposals import SynceCoupling
     from samosa.core.proposal import AdaptiveProposal
-    from samosa.core.kernel import CoupledKernelBase
+    from samosa.core.kernel import CoupledKernel
     from samosa.kernels.metropolis import MetropolisHastingsKernel
 
-    L = 3
-    models_list = [
-        (lambda params, lev=i: gaussian_model(params, lev)) for i in range(L)
-    ]
-    models = [(None, models_list[0])] + [
-        (models_list[i], models_list[i + 1]) for i in range(L - 1)
-    ]
+    L = 3  # max level index: levels 0, 1, ..., L (L+1 levels total)
     proposal = GaussianRandomWalk(mu=np.zeros((2, 1)), cov=3 * np.eye(2))
     adapter = GlobalAdapter(target_ar=0.44, adapt_end=10000)
     adaptive_proposal = AdaptiveProposal(base_proposal=proposal, adapter=adapter)
-    proposals = [(None, adaptive_proposal)] + [
-        (adaptive_proposal, adaptive_proposal) for _ in range(L - 1)
-    ]
-
-    def _make_kernel(
-        coarse: Optional[ModelProtocol],
-        fine: ModelProtocol,
-        coarse_proposal: Optional[Proposal],
-        fine_proposal: Proposal,
-    ) -> LevelKernel:
-        if coarse is None or coarse_proposal is None:
-            return MetropolisHastingsKernel(model=fine, proposal=fine_proposal)
-        return CoupledKernelBase(
-            coarse_model=coarse,
-            fine_model=fine,
-            coupled_proposal=SynceCoupling(coarse_proposal, fine_proposal),
-        )
-
     kernels = [
-        _make_kernel(c, f, cp, fp) for (c, f), (cp, fp) in zip(models, proposals)
+        MetropolisHastingsKernel(
+            model=lambda params: gaussian_model(params, level=0),
+            proposal=adaptive_proposal,
+        )
+    ] + [
+        CoupledKernel(
+            coarse_model=lambda params, i=i: gaussian_model(params, level=i - 1),
+            fine_model=lambda params, i=i: gaussian_model(params, level=i),
+            coupled_proposal=SynceCoupling(adaptive_proposal, adaptive_proposal),
+        )
+        for i in range(1, L + 1)  # levels 1, 2, ..., L (L levels total)
     ]
-    samples_per_level = [500000, 50000, 10000]
-    initial_positions = [(None, np.array([[0.0], [0.0]]))] + [
-        (np.array([[0.0], [0.0]]), np.array([[0.0], [0.0]])) for _ in range(L - 1)
+
+    samples_per_level = [50000] * (L + 1)
+    initial_positions = [(None, np.random.randn(2, 1))] + [
+        (np.random.randn(2, 1), np.random.randn(2, 1)) for _ in range(L)
     ]
 
     levels = create_mlmc_levels(
-        models=cast(Any, models),
-        proposals=cast(Any, proposals),
         kernels=kernels,
         samples_per_level=samples_per_level,
-        initial_positions=cast(Any, initial_positions),
+        initial_positions=initial_positions,
     )
 
     mlmc = MLMCSampler(
@@ -951,10 +960,12 @@ if __name__ == "__main__":
     mlmc.run()
 
     mlmc_calc = MLMCCalculator(
-        output_dir="mlmc_gaussian_example", num_levels=L, print_progress=True
+        output_dir="mlmc_gaussian_example", num_levels=L + 1, print_progress=True
     )
     mlmc_calc.compute_mlmc_estimator(burnin_fraction=0.3)
     mlmc_calc.print_mlmc_summary()
 
-    # mlmc_post = MLMCPostProcessor(output_dir='mlmc_gaussian_example', print_progress=True)
-    # mlmc_post.process_levels(levels=list(range(L)), burnin_fraction=0.3)
+    mlmc_post = MLMCPostProcessor(
+        output_dir="mlmc_gaussian_example", print_progress=True
+    )
+    mlmc_post.process_levels(levels=list(range(L + 1)), burnin_fraction=0.3)

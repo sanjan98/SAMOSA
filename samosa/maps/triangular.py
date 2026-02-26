@@ -31,6 +31,7 @@ class LowerTriangularMap(TransportMap):
         adapt_interval: int = 100,
         reference_model: Optional[Model] = None,
         grad_reference_model: Optional[Model] = None,
+        initial_samples: Optional[List[ChainState]] = None,
     ) -> None:
         """
         Initialize the lower triangular map.
@@ -42,12 +43,14 @@ class LowerTriangularMap(TransportMap):
             adapt_interval: Frequency of adaptation (default: 100).
             reference_model: Optional reference model for the map (If none is provided, a standard Gaussian is assumed).
             grad_reference_model: Optional reference model for the gradient of the log pdf (If none is provided, the default gradient computation will be used).
+            initial_samples: Optional list of ChainState samples to adapt the map once at construction. If None, a warning is logged; provide samples to adapt the map before sampling.
         """
         super().__init__(
             dim=dim,
             adapt_start=adapt_start,
             adapt_end=adapt_end,
             adapt_interval=adapt_interval,
+            initial_samples=initial_samples,
         )
 
         self.total_order = total_order
@@ -60,6 +63,7 @@ class LowerTriangularMap(TransportMap):
 
         # Define the map
         self._define_map()
+        self._adapt_initial_samples_if_any()
 
     def forward(self, x: np.ndarray) -> tuple[np.ndarray, float]:
         """

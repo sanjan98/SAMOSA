@@ -8,12 +8,15 @@ target distribution via a bijective map.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Callable, Optional
 
 import numpy as np
 from samosa.core.state import ChainState
 from samosa.utils.tools import lognormpdf
+
+logger = logging.getLogger(__name__)
 
 
 class TransportMapBase(ABC):
@@ -67,6 +70,7 @@ class TransportMapBase(ABC):
         adapt_start: int = 500,
         adapt_end: int = 10000,
         adapt_interval: int = 100,
+        initial_samples: Optional[list[ChainState]] = None,
     ) -> None:
         """
         Initialize transport map with dimension and adaptation settings.
@@ -76,6 +80,9 @@ class TransportMapBase(ABC):
             adapt_start: Start adaptation at this iteration.
             adapt_end: Stop adaptation after this iteration.
             adapt_interval: Adapt every N iterations within window.
+            initial_samples: Optional list of ChainState samples to adapt the map
+                once at construction. If None, a warning is logged; provide
+                samples to adapt the map before sampling.
 
         Raises:
             ValueError: If dim <= 0 or adaptation window is invalid.
@@ -94,9 +101,27 @@ class TransportMapBase(ABC):
         self.adapt_start = adapt_start
         self.adapt_end = adapt_end
         self.adapt_interval = adapt_interval
+        self.initial_samples = initial_samples
         # Optional affine standardization parameters in target space.
         self.norm_mean = np.zeros((dim, 1))
         self.norm_std = np.ones((dim, 1))
+
+    def _adapt_initial_samples_if_any(self) -> None:
+        """
+        If initial_samples were provided at construction, adapt the map once;
+        otherwise log a warning.
+
+        Subclasses must call this at the end of their __init__, after the map
+        is defined (e.g. after _define_map()). The base cannot call it from
+        __init__ because the concrete map is only built in the subclass.
+        """
+        if self.initial_samples is not None:
+            self.adapt(self.initial_samples, force_adapt=True)
+        else:
+            logger.warning(
+                "No initial samples provided for the transport map. "
+                "Please provide initial_samples to adapt the map before sampling."
+            )
 
     @abstractmethod
     def forward(

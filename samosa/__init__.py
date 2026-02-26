@@ -11,10 +11,14 @@ from samosa.core import (
     AdaptiveProposal,
     Proposal,
     ProposalBase,
-    TransportMap,
+    TransportProposal,
     TransportProposalBase,
     CoupledKernelBase,
     CoupledKernel,
+    create_mlmc_levels,
+    MLMCSampler,
+    MLMCCalculator,
+    MLMCPostProcessor,
 )
 from samosa.maps import (
     LinearOptimalTransportMap,
@@ -35,6 +39,7 @@ from samosa.proposals import (
 from samosa.utils import (
     load_samples,
     get_position_from_states,
+    get_reference_position_from_states,
     scatter_matrix,
     plot_trace,
     plot_lag,
@@ -53,10 +58,14 @@ __all__ = [
     "AdaptiveProposal",
     "Proposal",
     "ProposalBase",
-    "TransportMap",
+    "TransportProposal",
     "TransportProposalBase",
     "CoupledKernelBase",
     "CoupledKernel",
+    "create_mlmc_levels",
+    "MLMCSampler",
+    "MLMCCalculator",
+    "MLMCPostProcessor",
     # Proposals
     "GaussianRandomWalk",
     "GlobalAdapter",
@@ -80,6 +89,7 @@ __all__ = [
     # Utils
     "load_samples",
     "get_position_from_states",
+    "get_reference_position_from_states",
     "scatter_matrix",
     "plot_trace",
     "plot_lag",

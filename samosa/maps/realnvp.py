@@ -45,6 +45,7 @@ class RealNVPMap(TransportMap):
         adapt_end: int = 1000,
         adapt_interval: int = 100,
         reference_model: Optional[ModelProtocol] = None,
+        initial_samples: Optional[List[ChainState]] = None,
     ) -> None:
         """
         Initialize the RealNVP transport map.
@@ -61,6 +62,8 @@ class RealNVPMap(TransportMap):
             adapt_end: Iteration to end adaptation.
             adapt_interval: Adapt every ``adapt_interval`` iterations.
             reference_model: Optional reference model in the reference space.
+            initial_samples: Optional list of ChainState samples to adapt the map
+                once at construction. If None, a warning is logged.
         """
 
         super().__init__(
@@ -68,6 +71,7 @@ class RealNVPMap(TransportMap):
             adapt_start=adapt_start,
             adapt_end=adapt_end,
             adapt_interval=adapt_interval,
+            initial_samples=initial_samples,
         )
 
         self.masks = masks
@@ -95,6 +99,7 @@ class RealNVPMap(TransportMap):
         self.losses = []
 
         self._define_map()
+        self._adapt_initial_samples_if_any()
 
     def forward(self, x: np.ndarray) -> Tuple[np.ndarray, float]:
         """
