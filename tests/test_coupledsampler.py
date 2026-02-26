@@ -21,7 +21,10 @@ from samosa.proposals.coupled_proposals import (
 )
 from samosa.proposals.gaussianproposal import GaussianRandomWalk, IndependentProposal
 from samosa.samplers.coupled_chain import coupledMCMCsampler
-from samosa.utils.post_processing import load_coupled_samples
+from samosa.utils.post_processing import (
+    get_reference_position_from_states,
+    load_coupled_samples,
+)
 
 
 # --------------------------------------------------
@@ -640,6 +643,33 @@ def test_e2e_maximal_transport(gaussian_posterior_2d, output_dir):
         n_iterations=50,
     )
     _assert_e2e_basics(samples_c, samples_f, 50, ar_c, ar_f)
+
+
+def test_e2e_synce_transport_reference_positions(gaussian_posterior_2d, output_dir):
+    """E2E: SynceCoupling + TransportProposal(IdentityMap); load and check get_reference_position_from_states."""
+    dim = 2
+    grw_c = GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    grw_f = GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=np.eye(dim))
+    transport_c = TransportProposalBase(grw_c, IdentityMap(dim=dim))
+    transport_f = TransportProposalBase(grw_f, IdentityMap(dim=dim))
+    coupling = SynceCoupling(transport_c, transport_f, omega=1.0)
+    n_iterations = 50
+    burnin = 0.2
+    samples_c, samples_f, ar_c, ar_f = _run_coupled_e2e(
+        gaussian_posterior_2d,
+        gaussian_posterior_2d,
+        coupling,
+        np.zeros((dim, 1)),
+        np.zeros((dim, 1)),
+        output_dir,
+        n_iterations=n_iterations,
+    )
+    _assert_e2e_basics(samples_c, samples_f, n_iterations, ar_c, ar_f)
+    ref_c = get_reference_position_from_states(samples_c, burnin=burnin)
+    ref_f = get_reference_position_from_states(samples_f, burnin=burnin)
+    n_post_burnin = n_iterations - int(n_iterations * burnin)
+    assert ref_c.shape == (dim, n_post_burnin)
+    assert ref_f.shape == (dim, n_post_burnin)
 
 
 # --- Restart from checkpoint ---

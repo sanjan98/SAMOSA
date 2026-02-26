@@ -1,0 +1,5 @@
+# Optional: for transport maps (LowerTriangularMap, Normalizingflow, RealNVP)
+# See README for links: MParT, normflows
+MParT
+normflows
+torch

@@ -1,3 +1,5 @@
+from dataclasses import replace as state_replace
+
 import numpy as np
 import pytest
 
@@ -211,6 +213,63 @@ def test_independent_refreshes_common_sampler_from_adapted_proposals():
     np.testing.assert_allclose(
         coupling.common_sampler.cov, np.array([[3.0, 0.0], [0.0, 1.5]])
     )
+
+
+def test_synce_with_transport_sets_reference_position_both_chains():
+    """Synce (omega=0) + Transport: both proposed states have reference_position; identity map => position == reference_position."""
+    dim = 2
+    coarse = TransportProposalBase(
+        GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=np.eye(dim)), IdentityMap()
+    )
+    fine = TransportProposalBase(
+        GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=np.eye(dim)), IdentityMap()
+    )
+    coupling = SynceCoupling(coarse, fine, omega=0.0)
+
+    coarse_state = _state(np.array([[1.0], [2.0]]))
+    fine_state = _state(np.array([[-0.5], [0.5]]))
+    proposed_coarse, proposed_fine = coupling.sample_pair(coarse_state, fine_state)
+
+    assert proposed_coarse.reference_position is not None
+    assert proposed_fine.reference_position is not None
+    np.testing.assert_allclose(
+        proposed_coarse.position, proposed_coarse.reference_position
+    )
+    np.testing.assert_allclose(proposed_fine.position, proposed_fine.reference_position)
+
+
+def test_synce_transport_proposal_logpdf_pair_returns_finite():
+    """SynceCoupling + TransportProposal (identity map): proposal_logpdf_pair returns finite logpdfs."""
+    dim = 2
+    coarse = TransportProposalBase(
+        GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=np.eye(dim)), IdentityMap()
+    )
+    fine = TransportProposalBase(
+        GaussianRandomWalk(mu=np.zeros((dim, 1)), cov=np.eye(dim)), IdentityMap()
+    )
+    coupling = SynceCoupling(coarse, fine, omega=0.0)
+
+    # Ensure _last_mode is "synce" by doing one sample_pair (omega=0 => always synce).
+    coarse_state = _state(np.zeros((dim, 1)))
+    fine_state = _state(np.ones((dim, 1)))
+    coupling.sample_pair(coarse_state, fine_state)
+
+    # States with reference_position set (identity map: position == reference_position).
+    ref = np.array([[0.1], [0.2]])
+    current_coarse = state_replace(_state(ref.copy()), reference_position=ref.copy())
+    proposed_coarse = state_replace(
+        _state((ref + 0.5).copy()), reference_position=(ref + 0.5).copy()
+    )
+    current_fine = state_replace(_state(ref.copy()), reference_position=ref.copy())
+    proposed_fine = state_replace(
+        _state((ref - 0.3).copy()), reference_position=(ref - 0.3).copy()
+    )
+
+    (c_fwd, c_rev), (f_fwd, f_rev) = coupling.proposal_logpdf_pair(
+        current_coarse, proposed_coarse, current_fine, proposed_fine
+    )
+    assert np.isfinite(c_fwd) and np.isfinite(c_rev)
+    assert np.isfinite(f_fwd) and np.isfinite(f_rev)
 
 
 def test_maximal_coupling_supports_transport_wrapped_proposals(monkeypatch):
