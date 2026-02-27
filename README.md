@@ -17,9 +17,15 @@
 
 ## Installation
 
-Clone the repository and install in development mode:
+SAMOSA requires **Python 3.12 or newer**. To avoid import errors and conflicts with other packages, use a **virtual environment** and install SAMOSA inside it.
+
+If you are on a different python version, use ```pyenv```
+
+Create and activate a venv, then clone and install in development mode:
 
 ```bash
+python3.12 -m venv samosa_venv
+source samosa_venv/bin/activate   # On Windows: venv\Scripts\activate
 git clone https://github.com/sanjan-m/SAMOSA.git
 cd SAMOSA
 pip install -r requirements.txt
@@ -35,8 +41,6 @@ To use **transport maps** (`LowerTriangularMap`, `Normalizingflow`, `RealNVP` in
 - **MParT** — [GitHub](https://github.com/MeasureTransport/MParT). Follow the project’s install instructions (e.g. `pip install MParT` or `conda install -c conda-forge mpart` where supported).
 - **normflows** (and **PyTorch**) — [GitHub](https://github.com/VincentStimper/normalizing-flows). Install PyTorch for your platform first, then `pip install normflows` as described in the normflows docs.
 
-
-
 ## Quick start
 
 ```python
@@ -50,7 +54,7 @@ from samosa import (
 def model(params):
     return {"log_posterior": float(-0.5 * np.sum(params**2))}
 
-proposal = GaussianRandomWalk(mu=np.zeros((2, 1)), cov=0.1 * np.eye(2))
+proposal = GaussianRandomWalk(mu=np.zeros((2, 1)), cov=2.38**2 / 2 * np.eye(2))
 kernel = MetropolisHastingsKernel(model=model, proposal=proposal)
 sampler = SingleChainSampler(kernel, initial_position=np.zeros((2, 1)), n_iterations=1000)
 sampler.run("output")
