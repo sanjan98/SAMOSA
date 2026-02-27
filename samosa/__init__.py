@@ -43,6 +43,7 @@ from samosa.proposals import (
 )
 from samosa.utils import (
     load_samples,
+    load_coupled_samples,
     get_position_from_states,
     get_reference_position_from_states,
     scatter_matrix,
@@ -93,6 +94,7 @@ __all__ = [
     "DelayedRejectionKernel",
     # Utils
     "load_samples",
+    "load_coupled_samples",
     "get_position_from_states",
     "get_reference_position_from_states",
     "scatter_matrix",
