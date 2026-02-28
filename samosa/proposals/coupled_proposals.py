@@ -183,26 +183,57 @@ class IndependentCoupling(CoupledProposal):
         proposed: ChainState,
         proposal: Proposal,
     ) -> tuple[float, float]:
-        """Compute induced marginal logpdf under the common sampler."""
+        """Compute induced marginal logpdf under the common sampler.
+
+        Reuses TransportProposal.get_log_det_tinv when available (cache + non-finite
+        guard). Avoids calling map.forward on non-finite positions to prevent hangs.
+        """
         if hasattr(proposal, "map"):
             map_obj = getattr(proposal, "map")
             current_ref = current.reference_position
             proposed_ref = proposed.reference_position
+            # Do not call map.forward on non-finite positions (e.g. from failed inverse).
             if current_ref is None:
+                if not np.all(np.isfinite(current.position)):
+                    return (0.0, float("-inf"))
                 current_ref, _ = map_obj.forward(current.position)
             if proposed_ref is None:
+                if not np.all(np.isfinite(proposed.position)):
+                    return (0.0, float("-inf"))
                 proposed_ref, _ = map_obj.forward(proposed.position)
+
+            if not np.all(np.isfinite(current_ref)) or not np.all(
+                np.isfinite(proposed_ref)
+            ):
+                return (0.0, float("-inf"))
 
             logq_forward_ref, logq_reverse_ref = self.common_sampler.proposal_logpdf(
                 ChainState(position=current_ref, metadata=current.metadata),
                 ChainState(position=proposed_ref, metadata=proposed.metadata),
             )
-            _, log_det_forward_current = map_obj.forward(current.position)
-            _, log_det_forward_proposed = map_obj.forward(proposed.position)
-            return (
-                logq_forward_ref - log_det_forward_current,
-                logq_reverse_ref - log_det_forward_proposed,
-            )
+            # Reuse TransportProposal cache and non-finite guard when available.
+            get_log_det_tinv = getattr(proposal, "get_log_det_tinv", None)
+            if get_log_det_tinv is not None:
+                log_det_tinv_current, log_det_tinv_proposed = get_log_det_tinv(
+                    current, proposed
+                )
+            else:
+                if not np.all(np.isfinite(current.position)) or not np.all(
+                    np.isfinite(proposed.position)
+                ):
+                    log_det_tinv_current = -np.inf
+                    log_det_tinv_proposed = -np.inf
+                else:
+                    _, log_det_fwd_cur = map_obj.forward(current.position)
+                    _, log_det_fwd_prop = map_obj.forward(proposed.position)
+                    log_det_tinv_current = -log_det_fwd_cur
+                    log_det_tinv_proposed = -log_det_fwd_prop
+
+            logq_forward = logq_forward_ref + log_det_tinv_current
+            logq_reverse = logq_reverse_ref + log_det_tinv_proposed
+            if not np.isfinite(logq_forward) or not np.isfinite(logq_reverse):
+                return (0.0, float("-inf"))
+            return (logq_forward, logq_reverse)
         return self.common_sampler.proposal_logpdf(current, proposed)
 
     def sample_pair(

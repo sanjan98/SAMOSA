@@ -279,6 +279,37 @@ class TransportProposalBase(ProposalBase):
             metadata=state.metadata.copy() if state.metadata else {},
         )
 
+    def get_log_det_tinv(
+        self, state: ChainState, proposed: ChainState
+    ) -> tuple[float, float]:
+        """
+        Return (log|det(∇T^{-1}(x_current))|, log|det(∇T^{-1}(x_proposed))|) with
+        cache and non-finite guard. Used by coupled proposals to reuse cache and
+        avoid calling map.forward on NaN positions.
+        """
+        use_cache = (
+            {
+                "current_position",
+                "proposed_position",
+                "log_det_Tinv_current",
+                "log_det_Tinv_proposed",
+            }.issubset(self._cache)
+            and np.array_equal(self._cache["current_position"], state.position)
+            and np.array_equal(self._cache["proposed_position"], proposed.position)
+        )
+        if use_cache:
+            return (
+                self._cache["log_det_Tinv_current"],
+                self._cache["log_det_Tinv_proposed"],
+            )
+        if not np.all(np.isfinite(state.position)) or not np.all(
+            np.isfinite(proposed.position)
+        ):
+            return (-np.inf, -np.inf)
+        _, log_det_forward_current = self.map.forward(state.position)
+        _, log_det_forward_proposed = self.map.forward(proposed.position)
+        return (-log_det_forward_current, -log_det_forward_proposed)
+
     def proposal_logpdf(
         self, state: ChainState, proposed: ChainState
     ) -> tuple[float, float]:
@@ -310,24 +341,15 @@ class TransportProposalBase(ProposalBase):
             ),
         )
 
-        use_cache = (
-            {
-                "current_position",
-                "proposed_position",
-                "log_det_Tinv_current",
-                "log_det_Tinv_proposed",
-            }.issubset(self._cache)
-            and np.array_equal(self._cache["current_position"], state.position)
-            and np.array_equal(self._cache["proposed_position"], proposed.position)
+        log_det_tinv_current, log_det_tinv_proposed = self.get_log_det_tinv(
+            state, proposed
         )
-        if use_cache:
-            log_det_tinv_current = self._cache["log_det_Tinv_current"]
-            log_det_tinv_proposed = self._cache["log_det_Tinv_proposed"]
-        else:
-            _, log_det_forward_current = self.map.forward(state.position)
-            _, log_det_forward_proposed = self.map.forward(proposed.position)
-            log_det_tinv_current = -log_det_forward_current
-            log_det_tinv_proposed = -log_det_forward_proposed
+        if not np.isfinite(log_det_tinv_current) or not np.isfinite(
+            log_det_tinv_proposed
+        ):
+            # Return (0, -inf) so alpha = exp((lpp-lpc) + (-inf - 0)) = 0 (reject).
+            # Returning (-inf, 0) would give alpha = 1 (incorrect accept).
+            return (0.0, float("-inf"))
 
         return (
             logq_forward + log_det_tinv_current,

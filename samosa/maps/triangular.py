@@ -89,8 +89,14 @@ class LowerTriangularMap(TransportMap):
             Transformed data and log determinant.
         """
         xscaled = self.ttm.Inverse(r, r)
+        if not np.all(np.isfinite(xscaled)):
+            # Return immediately so we do not call _scale_points or LogDeterminant
+            # on non-finite data; -inf log_det ensures the proposal is rejected.
+            return (xscaled, -np.inf)
         x = self._scale_points(xscaled, normalize=False)
         log_det = -self.ttm.LogDeterminant(xscaled) + np.log(np.prod(self.norm_std))
+        if not np.all(np.isfinite(x)) or not np.isfinite(log_det):
+            return (x, -np.inf)
         return x, log_det
 
     def adapt(
