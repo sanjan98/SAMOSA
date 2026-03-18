@@ -1,0 +1,53 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the relevant papers below."
+title: "SAMOSA: Space-Aligned Multi-fidelity Open Sampling Architecture"
+type: software
+repository-code: "https://github.com/sanjan-m/SAMOSA"
+license: MIT
+
+authors:
+  - family-names: Muchandimath
+    given-names: Sanjan C.
+
+preferred-citation:
+  type: article
+  title: "Synchronized Step Multilevel Markov Chain Monte Carlo"
+  authors:
+    - family-names: Muchandimath
+      given-names: Sanjan C.
+    - family-names: Gorodetsky
+      given-names: Alex A.
+  year: 2025
+  url: "https://arxiv.org/abs/2501.16538"
+  identifiers:
+    - type: other
+      value: "arXiv:2501.16538"
+
+references:
+  - type: article
+    title: "Synchronized Step Multilevel Markov Chain Monte Carlo"
+    authors:
+      - family-names: Muchandimath
+        given-names: Sanjan C.
+      - family-names: Gorodetsky
+        given-names: Alex A.
+    year: 2025
+    url: "https://arxiv.org/abs/2501.16538"
+    identifiers:
+      - type: other
+        value: "arXiv:2501.16538"
+
+  - type: article
+    title: "Accelerating Bayesian Inference via Multi-Fidelity Transport Map Coupling"
+    authors:
+      - family-names: Muchandimath
+        given-names: Sanjan C.
+      - family-names: Martins
+        given-names: Joaquim R. R. A.
+      - family-names: Gorodetsky
+        given-names: Alex A.
+    year: 2025
+    url: "https://arxiv.org/abs/2510.17946"
+    identifiers:
+      - type: other
+        value: "arXiv:2510.17946"

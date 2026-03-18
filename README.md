@@ -76,6 +76,37 @@ In MCMC we use a **Markov chain** to generate samples from a target distribution
 - **coupled_chain** — Coupled sampling with Independent, Maximal, and Synce coupling (including transport maps).
 - **mlmcmc** — Multilevel MCMC: build kernels per level, run sampling, and estimate MLMC statistics.
 
+## Citation
+
+If you use SAMOSA in your research, please cite the relevant papers below.
+
+```bibtex
+@misc{muchandimath2025synce,
+  author        = {Sanjan C. Muchandimath and Alex A. Gorodetsky},
+  title         = {Synchronized Step Multilevel {Markov} Chain {Monte} {Carlo}},
+  year          = {2025},
+  eprint        = {2501.16538},
+  archivePrefix = {arXiv},
+  primaryClass  = {stat.AP},
+  url           = {https://arxiv.org/abs/2501.16538}
+}
+
+@misc{muchandimath2025transport,
+  author        = {Sanjan C. Muchandimath and Joaquim R. R. A. Martins and Alex A. Gorodetsky},
+  title         = {Accelerating {Bayesian} Inference via Multi-Fidelity Transport Map Coupling},
+  year          = {2025},
+  eprint        = {2510.17946},
+  archivePrefix = {arXiv},
+  primaryClass  = {stat.ME},
+  url           = {https://arxiv.org/abs/2510.17946}
+}
+```
+
+## References
+
+- Muchandimath, S. C., & Gorodetsky, A. A. (2025). *Synchronized Step Multilevel Markov Chain Monte Carlo*. arXiv preprint arXiv:2501.16538. [https://arxiv.org/abs/2501.16538](https://arxiv.org/abs/2501.16538)
+- Muchandimath, S. C., Martins, J. R. R. A., & Gorodetsky, A. A. (2025). *Accelerating Bayesian Inference via Multi-Fidelity Transport Map Coupling*. arXiv preprint arXiv:2510.17946. [https://arxiv.org/abs/2510.17946](https://arxiv.org/abs/2510.17946)
+
 ## License
 
 See [LICENSE](LICENSE).
