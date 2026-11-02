@@ -91,21 +91,17 @@ If you use SAMOSA in your research, please cite the relevant papers below.
   url           = {https://arxiv.org/abs/2501.16538}
 }
 
-@misc{muchandimath2025transport,
-  author        = {Sanjan C. Muchandimath and Joaquim R. R. A. Martins and Alex A. Gorodetsky},
-  title         = {Accelerating {Bayesian} Inference via Multi-Fidelity Transport Map Coupling},
-  year          = {2025},
-  eprint        = {2510.17946},
-  archivePrefix = {arXiv},
-  primaryClass  = {stat.ME},
-  url           = {https://arxiv.org/abs/2510.17946}
+@article{muchandimath2026transport,
+  author  = {Sanjan C. Muchandimath and Joaquim R. R. A. Martins and Alex A. Gorodetsky},
+  title   = {Accelerating {Bayesian} Inference via Multifidelity Transport Map Coupling},
+  journal = {AIAA Journal},
+  year    = {2026},
+  volume  = {64},
+  number  = {9},
+  pages   = {5325--5341},
+  doi     = {10.2514/1.J066460}
 }
 ```
-
-## References
-
-- Muchandimath, S. C., & Gorodetsky, A. A. (2025). *Synchronized Step Multilevel Markov Chain Monte Carlo*. arXiv preprint arXiv:2501.16538. [https://arxiv.org/abs/2501.16538](https://arxiv.org/abs/2501.16538)
-- Muchandimath, S. C., Martins, J. R. R. A., & Gorodetsky, A. A. (2025). *Accelerating Bayesian Inference via Multi-Fidelity Transport Map Coupling*. arXiv preprint arXiv:2510.17946. [https://arxiv.org/abs/2510.17946](https://arxiv.org/abs/2510.17946)
 
 ## License
 

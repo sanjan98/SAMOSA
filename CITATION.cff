@@ -25,20 +25,7 @@ preferred-citation:
 
 references:
   - type: article
-    title: "Synchronized Step Multilevel Markov Chain Monte Carlo"
-    authors:
-      - family-names: Muchandimath
-        given-names: Sanjan C.
-      - family-names: Gorodetsky
-        given-names: Alex A.
-    year: 2025
-    url: "https://arxiv.org/abs/2501.16538"
-    identifiers:
-      - type: other
-        value: "arXiv:2501.16538"
-
-  - type: article
-    title: "Accelerating Bayesian Inference via Multi-Fidelity Transport Map Coupling"
+    title: "Accelerating Bayesian Inference via Multifidelity Transport Map Coupling"
     authors:
       - family-names: Muchandimath
         given-names: Sanjan C.
@@ -46,8 +33,15 @@ references:
         given-names: Joaquim R. R. A.
       - family-names: Gorodetsky
         given-names: Alex A.
-    year: 2025
-    url: "https://arxiv.org/abs/2510.17946"
+    journal: "AIAA Journal"
+    volume: 64
+    issue: 9
+    start: 5325
+    end: 5341
+    year: 2026
+    month: 9
+    doi: "10.2514/1.J066460"
+    url: "https://doi.org/10.2514/1.J066460"
     identifiers:
       - type: other
         value: "arXiv:2510.17946"
